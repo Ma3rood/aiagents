@@ -1,0 +1,32 @@
+FROM nvidia/cuda:12.8.1-cudnn-runtime-ubuntu24.04
+
+# Basic setup
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt update && apt install -y \
+    git curl wget build-essential python3 python3-pip python-is-python3 \
+    && apt clean
+
+# Python dependencies
+# Python dependencies
+RUN pip3 install --break-system-packages fastapi
+RUN pip3 install --break-system-packages uvicorn==0.24.0
+RUN pip3 install --break-system-packages gunicorn==23.0.0
+RUN pip3 install --break-system-packages python-dotenv==1.0.0
+RUN pip3 install --break-system-packages pydantic==2.7.4
+RUN pip3 install --break-system-packages pydantic-settings==2.5.2
+RUN pip3 install --break-system-packages pydantic[email]
+RUN pip3 install --break-system-packages bcrypt==4.0.1
+RUN pip3 install --break-system-packages python-jose[cryptography]==3.3.0
+RUN pip3 install --break-system-packages passlib==1.7.4
+RUN pip3 install --break-system-packages python-multipart==0.0.6
+RUN pip3 install --break-system-packages python-dateutil==2.8.2
+RUN pip3 install --break-system-packages httpx==0.25.2
+
+# Install Node.js and npm
+RUN apt-get update && \
+    apt-get install -y curl && \
+    curl -fsSL https://deb.nodesource.com/setup_18.x | bash - && \
+    apt-get install -y nodejs && \
+    npm install -g n8n-mcp
+
+WORKDIR /workspace
