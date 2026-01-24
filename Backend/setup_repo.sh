@@ -24,16 +24,16 @@ YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
 # Default configuration values (used if not set via environment variables)
-DEFAULT_OPENROUTER_API_KEY=""
+DEFAULT_OPENROUTER_API_KEY="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"
 DEFAULT_OPENROUTER_BASE_URL="https://openrouter.ai/api/v1/chat/completions"
 DEFAULT_LOG_DIR="logs"
 DEFAULT_ANALYTICS_CSV_PATH="analytics/inference_analytics.csv"
-DEFAULT_CREATE_DOCKER_IMAGE="false"
-DEFAULT_DOCKER_IMAGE_NAME="Ma3roodAIAgents"
+DEFAULT_CREATE_DOCKER_IMAGE="true"
+DEFAULT_DOCKER_IMAGE_NAME="ma3roodagents1"
 DEFAULT_DOCKER_IMAGE_TAG="v1.0.0"
-DEFAULT_START_CONTAINER="false"
+DEFAULT_START_CONTAINER="true"
 DEFAULT_FASTAPI_PORT="8001"
-DEFAULT_CONTAINER_NAME="ma3roodaiagents-container"
+DEFAULT_CONTAINER_NAME="ma3roodagents1-container"
 
 # Get repository URL from argument or environment variable
 REPO_URL="${1:-${GITHUB_REPO_URL}}"
@@ -246,8 +246,8 @@ else
 fi
 
 # Check if container should be started
-# Start container if: 1) Start_Container is explicitly set to true, OR 2) Image was just built
-START_CONTAINER_VALUE="${Start_Container:-${START_CONTAINER}}"
+# Start container if: 1) Start_Container is explicitly set to true, OR 2) Image was just built, OR 3) Default is true
+START_CONTAINER_VALUE="${Start_Container:-${START_CONTAINER:-$DEFAULT_START_CONTAINER}}"
 SHOULD_START_CONTAINER=false
 
 if [ -n "$START_CONTAINER_VALUE" ]; then
@@ -316,20 +316,67 @@ if [ "$SHOULD_START_CONTAINER" = true ]; then
     echo -e "${YELLOW}Mounting Backend directory: $BACKEND_DIR -> /workspace${NC}"
     echo -e "${YELLOW}Exposing port: $FASTAPI_PORT${NC}"
     
+    # Convert path for Windows/Docker compatibility if running on Windows
+    VOLUME_PATH="$BACKEND_DIR"
+    if [[ "$OSTYPE" == "msys" || "$OSTYPE" == "cygwin" ]] || (command -v cygpath >/dev/null 2>&1); then
+        # Running on Windows (Git Bash or Cygwin)
+        # Use cygpath if available to convert to Windows path, otherwise use pwd -W
+        if command -v cygpath >/dev/null 2>&1; then
+            VOLUME_PATH=$(cygpath -w "$BACKEND_DIR" 2>/dev/null || echo "$BACKEND_DIR")
+        elif command -v pwd >/dev/null 2>&1 && pwd -W >/dev/null 2>&1; then
+            # Git Bash: convert Unix path to Windows path
+            # Save current directory, change to BACKEND_DIR, get Windows path, then restore
+            CURRENT_DIR=$(pwd)
+            cd "$BACKEND_DIR" && VOLUME_PATH=$(pwd -W 2>/dev/null || echo "$BACKEND_DIR")
+            cd "$CURRENT_DIR"
+        else
+            # Fallback: try to convert /c/path to C:/path manually
+            if [[ "$VOLUME_PATH" =~ ^/([a-zA-Z])/(.*) ]]; then
+                DRIVE_LETTER=$(echo "${BASH_REMATCH[1]}" | tr '[:upper:]' '[:lower:]' | tr '[:lower:]' '[:upper:]')
+                REST_PATH="${BASH_REMATCH[2]}"
+                VOLUME_PATH="${DRIVE_LETTER}:/${REST_PATH}"
+            fi
+        fi
+        echo -e "${YELLOW}Using Windows path for volume: $VOLUME_PATH${NC}"
+    fi
+    
     # Start container in detached mode with volume mount
-    docker run -d \
-        --name "$CONTAINER_NAME" \
-        -p "${FASTAPI_PORT}:${FASTAPI_PORT}" \
-        -v "${BACKEND_DIR}:/workspace" \
-        -w /workspace \
-        "$FULL_IMAGE_NAME" \
-        gunicorn app.main:app \
-            --workers 4 \
-            --worker-class uvicorn.workers.UvicornWorker \
-            --bind "0.0.0.0:${FASTAPI_PORT}" \
-            --timeout 120 \
-            --access-logfile - \
-            --error-logfile -
+    # Prevent Git Bash from converting container paths on Windows
+    # On Windows, VOLUME_PATH is already converted to Windows format, so disable all path conversion
+    if [[ "$OSTYPE" == "msys" || "$OSTYPE" == "cygwin" ]]; then
+        # On Windows (Git Bash/Cygwin), disable path conversion for entire docker command
+        # VOLUME_PATH is already in Windows format, and we want /workspace to stay as container path
+        MSYS_NO_PATHCONV=1 docker run -d \
+            --name "$CONTAINER_NAME" \
+            -p "${FASTAPI_PORT}:${FASTAPI_PORT}" \
+            -v "${VOLUME_PATH}:/workspace" \
+            -w "/workspace" \
+            "$FULL_IMAGE_NAME" \
+            gunicorn app.main:app \
+                --workers 4 \
+                --worker-class uvicorn.workers.UvicornWorker \
+                --bind "0.0.0.0:${FASTAPI_PORT}" \
+                --reload \
+                --timeout 120 \
+                --access-logfile - \
+                --error-logfile -
+    else
+        # On Linux/Mac, no path conversion needed
+        docker run -d \
+            --name "$CONTAINER_NAME" \
+            -p "${FASTAPI_PORT}:${FASTAPI_PORT}" \
+            -v "${VOLUME_PATH}:/workspace" \
+            -w "/workspace" \
+            "$FULL_IMAGE_NAME" \
+            gunicorn app.main:app \
+                --workers 4 \
+                --worker-class uvicorn.workers.UvicornWorker \
+                --bind "0.0.0.0:${FASTAPI_PORT}" \
+                --reload \
+                --timeout 120 \
+                --access-logfile - \
+                --error-logfile -
+    fi
     
     if [ $? -eq 0 ]; then
         echo -e "${GREEN}Container started successfully: $CONTAINER_NAME${NC}"
@@ -400,5 +447,3 @@ if [ "$SHOULD_START_CONTAINER" = true ]; then
 fi
 
 echo -e "${GREEN}Setup completed successfully!${NC}"
-echo -e "${YELLOW}.env file location: $(pwd)/$ENV_FILE${NC}"
-echo -e "${YELLOW}You can now edit the .env file manually to add any additional configuration values.${NC}"
