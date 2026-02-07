@@ -1,5 +1,6 @@
 import httpx
 import json
+import re
 import time
 from typing import Dict, Any, Optional, List
 from app.core.config import settings
@@ -9,11 +10,48 @@ from app.core.analytics import get_analytics_service
 logger = get_logger(__name__)
 
 
+def _fix_trailing_comma_json(s: str) -> str:
+    """Fix common LLM JSON issues: trailing commas, missing commas between array elements."""
+    s = re.sub(r",\s*]", "]", s)
+    s = re.sub(r",\s*}", "}", s)
+    s = re.sub(r"}\s*(?:\r?\n\s*)+{", "},\n{", s)
+    s = re.sub(r"}\s+{", "},{", s)
+    return s
+
+
 class OpenRouterService:
     """Service for interacting with OpenRouter API using Qwen3 VL model"""
     
     MODEL = "qwen/qwen3-vl-235b-a22b-instruct"  # Vision model for image processing
-    TEXT_MODEL = "qwen/qwen3-235b-a22b"  # Text model for translation and text tasks
+    TEXT_MODEL = "docker.io/ai/qwen3-vl:latest"  # Text model for translation and text tasks
+    EMBEDDING_MODEL = "docker.io/ai/qwen3-embedding:8B-Q4_K_M"  # Embedding model for semantic search
+    
+    # Root categories for marketplace classification
+    ROOT_CATEGORIES = [
+        "Antiques & collectables",
+        "Art",
+        "Baby-gear",
+        "Books",
+        "Building-renovation",
+        "Business-farming-industry",
+        "Clothing & Fashion",
+        "Computers",
+        "Crafts",
+        "Electronics-photography",
+        "Flatmates-wanted",
+        "Gaming",
+        "Health-beauty",
+        "Home & Living",
+        "Jewellery & watches",
+        "Mobile phones",
+        "Movies & TV",
+        "Music-instruments",
+        "Pets & animals",
+        "Pottery & Glass",
+        "Sports",
+        "Toys & models",
+        "Travel-events-activities"
+    ]
     
     def __init__(self):
         self.api_key = settings.OPENROUTER_API_KEY
@@ -21,6 +59,7 @@ class OpenRouterService:
             logger.error("OPENROUTER_API_KEY is not set in environment variables")
             raise ValueError("OPENROUTER_API_KEY is not set in environment variables")
         self.base_url = settings.OPENROUTER_BASE_URL
+        self.embedding_url = settings.OPENROUTER_EMBEDDING_URL
         logger.debug(f"OpenRouterService initialized - Base URL: {self.base_url}")
     
     async def extract_form_fields_from_images(
@@ -306,7 +345,7 @@ Respond ONLY with a valid JSON object in {language} language. Do not include any
 
 REQUIRED FIELDS (always include these):
 - title: Product/item title (string, required)
-- description: Detailed description of the product/item (string, required)
+- description: Detailed, marketing-friendly description of the product/item (string, required). Make it compelling and appealing to buyers, highlight key benefits/features clearly visible in the images.
 - price: Price if visible (number, or null if not found)
 - category: Product category (string, e.g., "Electronics", "Clothing", "Furniture", "Vehicles", etc.)
 - condition: Condition of the item. Must be one of the following exact values (string, or null if not determinable):
@@ -853,5 +892,830 @@ Example output:
 }}
 
 Now translate the provided fields to {target_language}:"""
+
+        return prompt
+
+    async def create_embedding(self, text: str) -> List[float]:
+        """
+        Create an embedding vector for the given text using qwen3-embedding-8b model.
+        
+        Args:
+            text: The text to create an embedding for
+            
+        Returns:
+            List of floats representing the embedding vector
+        """
+        logger.debug(f"Creating embedding for text (length: {len(text)} chars)")
+        
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+            "HTTP-Referer": "https://github.com/your-repo",
+            "X-Title": "Ma3rood AI Agents Embedding Service"
+        }
+        
+        payload = {
+            "model": self.EMBEDDING_MODEL,
+            "input": text
+        }
+        
+        async with httpx.AsyncClient(timeout=180.0) as client:
+            try:
+                response = await client.post(
+                    self.embedding_url,
+                    headers=headers,
+                    json=payload
+                )
+                response.raise_for_status()
+                
+                result = response.json()
+                
+                if "data" in result and len(result["data"]) > 0:
+                    embedding = result["data"][0]["embedding"]
+                    logger.debug(f"Created embedding with dimension: {len(embedding)}")
+                    return embedding
+                else:
+                    logger.error("No embedding data in API response")
+                    raise ValueError("No embedding data in API response")
+                    
+            except httpx.HTTPStatusError as e:
+                error_detail = f"OpenRouter Embedding API error: {e.response.status_code}"
+                logger.error(f"HTTP error from OpenRouter Embedding API: {error_detail}")
+                if e.response.text:
+                    try:
+                        error_data = e.response.json()
+                        error_detail = error_data.get("error", {}).get("message", error_detail)
+                    except:
+                        error_detail = f"{error_detail} - {e.response.text}"
+                raise Exception(error_detail)
+            except httpx.RequestError as e:
+                error_detail = f"Request error: {str(e)}"
+                logger.error(f"Request error to OpenRouter Embedding API: {str(e)}", exc_info=True)
+                raise Exception(error_detail)
+
+    async def create_embeddings_batch(self, texts: List[str]) -> List[List[float]]:
+        """
+        Create embedding vectors for multiple texts in one API call when supported,
+        otherwise falls back to sequential calls.
+        
+        Args:
+            texts: List of texts to create embeddings for
+            
+        Returns:
+            List of embedding vectors (same order as input texts)
+        """
+        if not texts:
+            return []
+        
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+            "HTTP-Referer": "https://github.com/your-repo",
+            "X-Title": "Ma3rood AI Agents Embedding Service"
+        }
+        
+        payload = {
+            "model": self.EMBEDDING_MODEL,
+            "input": texts
+        }
+        
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            try:
+                response = await client.post(
+                    self.embedding_url,
+                    headers=headers,
+                    json=payload
+                )
+                response.raise_for_status()
+                result = response.json()
+                
+                if "data" in result and len(result["data"]) > 0:
+                    # API returns embeddings in order; preserve order by index if present
+                    data = result["data"]
+                    embeddings = [None] * len(data)
+                    for item in data:
+                        idx = item.get("index", len(embeddings))
+                        if idx < len(embeddings):
+                            embeddings[idx] = item["embedding"]
+                        else:
+                            embeddings.append(item["embedding"])
+                    embeddings = [e for e in embeddings if e is not None]
+                    if len(embeddings) == len(texts):
+                        logger.debug(f"Created {len(embeddings)} embeddings in batch")
+                        return embeddings
+                
+                # Fallback: sequential calls
+                logger.debug("Batch embedding not fully supported, falling back to sequential")
+                return [await self.create_embedding(t) for t in texts]
+                
+            except (httpx.HTTPStatusError, (KeyError, IndexError)) as e:
+                # Fallback to sequential on batch API errors
+                logger.warning(f"Batch embedding failed ({e}), falling back to sequential")
+                return [await self.create_embedding(t) for t in texts]
+
+    async def generate_category_semantic_description(
+        self, 
+        category_path: str
+    ) -> Dict[str, Any]:
+        """
+        Generate a semantic description and relevant attributes for a category.
+        
+        Args:
+            category_path: The full category path (e.g., "Electronics > Phones > Smartphones")
+            
+        Returns:
+            Dictionary with:
+                - semantic_description: A detailed description of what products belong in this category
+                - relevant_attributes: List of relevant attributes for products in this category
+        """
+        start_time = time.time()
+        logger.info(f"Generating semantic description for category: {category_path}")
+        
+        prompt = self._build_category_semantic_prompt(category_path)
+        
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+            "HTTP-Referer": "https://github.com/your-repo",
+            "X-Title": "Ma3rood AI Agents Category Embedding Service"
+        }
+        
+        payload = {
+            "model": self.TEXT_MODEL,
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": 0.3,
+            "max_tokens": 1000
+        }
+        
+        async with httpx.AsyncClient(timeout=360.0) as client:
+            try:
+                response = await client.post(
+                    self.base_url,
+                    headers=headers,
+                    json=payload
+                )
+                response.raise_for_status()
+                
+                result = response.json()
+                
+                if "choices" in result and len(result["choices"]) > 0:
+                    content = result["choices"][0]["message"]["content"]
+                    
+                    # Parse JSON from response
+                    content = content.strip()
+                    if content.startswith("```json"):
+                        content = content[7:]
+                    if content.startswith("```"):
+                        content = content[3:]
+                    if content.endswith("```"):
+                        content = content[:-3]
+                    content = content.strip()
+                    
+                    parsed = json.loads(content)
+                    
+                    time_taken = time.time() - start_time
+                    logger.info(f"Generated semantic description for {category_path} in {time_taken:.2f}s")
+                    
+                    return {
+                        "semantic_description": parsed.get("semantic_description", ""),
+                        "relevant_attributes": parsed.get("relevant_attributes", [])
+                    }
+                else:
+                    raise ValueError("No choices in API response")
+                    
+            except httpx.HTTPStatusError as e:
+                error_detail = f"OpenRouter API error: {e.response.status_code}"
+                logger.error(f"HTTP error generating category description: {error_detail}")
+                raise Exception(error_detail)
+            except json.JSONDecodeError as e:
+                logger.error(f"Failed to parse JSON response for category: {category_path}")
+                raise Exception(f"Failed to parse category description: {str(e)}")
+            except Exception as e:
+                logger.error(f"Error generating category description: {str(e)}", exc_info=True)
+                raise
+
+    def _build_category_semantic_prompt(self, category_path: str) -> str:
+        """Build prompt for generating category semantic description"""
+        
+        prompt = f"""You are an expert in product categorization for an online marketplace.
+
+Given the following product category path, generate:
+1. A semantic description that describes what types of products belong in this category
+2. A list of relevant attributes that are typically associated with products in this category
+
+Category Path: {category_path}
+
+IMPORTANT GUIDELINES:
+1. The semantic description should be 2-3 sentences that clearly describe:
+   - What types of products belong in this category
+   - Key characteristics or features of products in this category
+   - Common use cases or target audience (if applicable)
+
+2. The relevant attributes should be specific to this category type. Choose from attributes like:
+   - Brand, Model, Color, Size, Weight, Material
+   - Memory/RAM, Storage, Hard Drive Size, Processor, Cores
+   - Screen Size, Resolution, Battery Capacity, Operating System
+   - Network Type, Camera, Battery Life
+   - Gender, Season, Year
+   - Mileage, Fuel Type, Transmission
+   - Dimensions, Condition Details, Warranty, Accessories Included
+   - Or any other category-specific attributes
+
+3. Only include attributes that are genuinely relevant to this specific category.
+   For example:
+   - For "Mobile phones", include: Brand, Model, Storage, RAM, Screen Size, Battery Capacity, Camera, Operating System
+   - For "Clothing & Fashion > Shoes", include: Brand, Size, Color, Material, Gender
+   - For "Antiques & collectables", include: Year, Material, Condition Details, Dimensions
+
+Respond ONLY with a valid JSON object in the following format:
+{{
+  "semantic_description": "A detailed description of what products belong in this category...",
+  "relevant_attributes": ["Attribute1", "Attribute2", "Attribute3", ...]
+}}
+
+Do not include any explanations or markdown formatting outside the JSON."""
+
+        return prompt
+
+    def _build_category_semantic_batch_prompt(self, category_paths: List[str]) -> str:
+        """Build prompt for generating semantic descriptions for a batch of categories"""
+        categories_list = "\n".join([f"- {i+1}. {path}" for i, path in enumerate(category_paths)])
+        
+        prompt = f"""You are an expert in product categorization for an online marketplace.
+
+For EACH of the following product category paths, generate:
+1. A semantic description that describes what types of products belong in that category
+2. A list of relevant attributes that are typically associated with products in that category
+
+Category paths:
+{categories_list}
+
+IMPORTANT GUIDELINES (apply to EACH category in the list):
+1. The semantic description should be 2-3 sentences that clearly describe:
+   - What types of products belong in this category
+   - Key characteristics or features of products in this category
+   - Common use cases or target audience (if applicable)
+
+2. The relevant attributes should be specific to each category type. Choose from attributes like:
+   - Brand, Model, Color, Size, Weight, Material
+   - Memory/RAM, Storage, Hard Drive Size, Processor, Cores
+   - Screen Size, Resolution, Battery Capacity, Operating System
+   - Network Type, Camera, Battery Life
+   - Gender, Season, Year
+   - Mileage, Fuel Type, Transmission
+   - Dimensions, Condition Details, Warranty, Accessories Included
+   - Or any other category-specific attributes
+
+3. Only include attributes that are genuinely relevant to each specific category.
+   For example:
+   - For "Mobile phones", include: Brand, Model, Storage, RAM, Screen Size, Battery Capacity, Camera, Operating System
+   - For "Clothing & Fashion > Shoes", include: Brand, Size, Color, Material, Gender
+   - For "Antiques & collectables", include: Year, Material, Condition Details, Dimensions
+
+4. Respond with a JSON array. Each element must have "semantic_description" and "relevant_attributes" (array of strings).
+   The order of the array MUST match the order of the category paths above (first category = first object, etc.).
+
+Respond ONLY with a valid JSON array, no other text or markdown:
+[
+  {{"semantic_description": "A detailed description of what products belong in this category...", "relevant_attributes": ["Attribute1", "Attribute2", ...]}},
+  {{"semantic_description": "...", "relevant_attributes": ["Attribute1", ...]}},
+  ...
+]"""
+
+        return prompt
+
+    async def generate_category_semantic_descriptions_batch(
+        self,
+        category_paths: List[str]
+    ) -> List[Dict[str, Any]]:
+        """
+        Generate semantic descriptions and relevant attributes for a batch of categories in one LLM call.
+        On JSON parse failure (e.g. truncation), retries by splitting the batch or falling back to single-category calls.
+        
+        Args:
+            category_paths: List of full category paths
+            
+        Returns:
+            List of dicts with semantic_description and relevant_attributes (same order as input)
+        """
+        if not category_paths:
+            return []
+        
+        try:
+            return await self._generate_category_semantic_descriptions_batch_impl(category_paths)
+        except json.JSONDecodeError as e:
+            logger.warning(f"Batch JSON parse failed ({e}), retrying with smaller batches")
+            if len(category_paths) == 1:
+                result = await self.generate_category_semantic_description(category_paths[0])
+                return [result]
+            mid = len(category_paths) // 2
+            first = await self.generate_category_semantic_descriptions_batch(category_paths[:mid])
+            second = await self.generate_category_semantic_descriptions_batch(category_paths[mid:])
+            return first + second
+
+    async def _generate_category_semantic_descriptions_batch_impl(
+        self,
+        category_paths: List[str]
+    ) -> List[Dict[str, Any]]:
+        """Internal: one LLM call for the batch. Raises JSONDecodeError on parse failure."""
+        if not category_paths:
+            return []
+        
+        start_time = time.time()
+        logger.info(f"Generating semantic descriptions for batch of {len(category_paths)} categories")
+        
+        prompt = self._build_category_semantic_batch_prompt(category_paths)
+        
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+            "HTTP-Referer": "https://github.com/your-repo",
+            "X-Title": "Ma3rood AI Agents Category Embedding Service"
+        }
+        
+        payload = {
+            "model": self.TEXT_MODEL,
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": 0.3,
+            "max_tokens": 12000
+        }
+        
+        async with httpx.AsyncClient(timeout=180.0) as client:
+            response = await client.post(
+                self.base_url,
+                headers=headers,
+                json=payload
+            )
+            response.raise_for_status()
+            result = response.json()
+            
+            if "choices" not in result or len(result["choices"]) == 0:
+                raise ValueError("No choices in API response")
+            
+            content = result["choices"][0]["message"]["content"]
+            content = content.strip()
+            if content.startswith("```json"):
+                content = content[7:]
+            if content.startswith("```"):
+                content = content[3:]
+            if content.endswith("```"):
+                content = content[:-3]
+            content = content.strip()
+            content = _fix_trailing_comma_json(content)
+            
+            try:
+                parsed = json.loads(content)
+            except json.JSONDecodeError:
+                content_retry = re.sub(r"}\s*(?:\r?\n\s*)+{", "},\n{", content)
+                content_retry = re.sub(r"}\s+{", "},{", content_retry)
+                parsed = json.loads(content_retry)
+            
+            if not isinstance(parsed, list):
+                parsed = [parsed]
+            
+            time_taken = time.time() - start_time
+            logger.info(f"Generated {len(parsed)} semantic descriptions in {time_taken:.2f}s")
+            
+            return [
+                {
+                    "semantic_description": item.get("semantic_description", ""),
+                    "relevant_attributes": item.get("relevant_attributes", [])
+                }
+                for item in parsed
+            ]
+
+    async def select_category_and_generate_output(
+        self,
+        image_urls: List[str],
+        visual_description: str,
+        candidate_categories: List[Dict[str, Any]],
+        language: str
+    ) -> Dict[str, Any]:
+        """
+        Select the best category from candidates and generate final output.
+        
+        This is Step 3 of the image-to-form flow.
+        
+        Args:
+            image_urls: List of URLs of product images
+            visual_description: The visual description from Step 1
+            candidate_categories: List of candidate categories with their attributes from Step 2
+            language: Target language for the output
+            
+        Returns:
+            Dictionary with:
+                - description: Product description in target language
+                - category: Selected category (id_path and category_path)
+                - condition: Product condition
+                - attributes: Extracted attribute values
+        """
+        start_time = time.time()
+        logger.info(
+            f"Selecting category and generating output - "
+            f"Candidates: {len(candidate_categories)}, Language: {language}"
+        )
+        
+        analytics_service = get_analytics_service()
+        prompt_tokens = 0
+        completion_tokens = 0
+        total_tokens = 0
+        cached_tokens = 0
+        reasoning_tokens = 0
+        cost = 0.0
+        
+        prompt = self._build_category_selection_prompt(
+            visual_description=visual_description,
+            candidate_categories=candidate_categories,
+            language=language,
+            image_count=len(image_urls)
+        )
+        input_char_count = len(prompt)
+        
+        # Prepare content with images
+        content = [{"type": "text", "text": prompt}]
+        for image_url in image_urls:
+            content.append({
+                "type": "image_url",
+                "image_url": {"url": image_url}
+            })
+        
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+            "HTTP-Referer": "https://github.com/your-repo",
+            "X-Title": "Ma3rood AI Agents Category Selection"
+        }
+        
+        payload = {
+            "model": self.MODEL,
+            "messages": [{"role": "user", "content": content}],
+            "temperature": 0.3,
+            "max_tokens": 3000,
+            "usage": {"include": True}
+        }
+        
+        async with httpx.AsyncClient(timeout=90.0) as client:
+            try:
+                response = await client.post(
+                    self.base_url,
+                    headers=headers,
+                    json=payload
+                )
+                response.raise_for_status()
+                
+                result = response.json()
+                
+                # Extract token usage
+                if "usage" in result:
+                    usage = result["usage"]
+                    prompt_tokens = usage.get("prompt_tokens", 0)
+                    completion_tokens = usage.get("completion_tokens", 0)
+                    total_tokens = usage.get("total_tokens", 0)
+                    cost = usage.get("cost", 0)
+                    prompt_details = usage.get("prompt_tokens_details", {})
+                    completion_details = usage.get("completion_tokens_details", {})
+                    cached_tokens = prompt_details.get("cached_tokens", 0)
+                    reasoning_tokens = completion_details.get("reasoning_tokens", 0)
+                
+                if "choices" in result and len(result["choices"]) > 0:
+                    content_text = result["choices"][0]["message"]["content"]
+                    
+                    # Parse JSON from response
+                    content_text = content_text.strip()
+                    if content_text.startswith("```json"):
+                        content_text = content_text[7:]
+                    if content_text.startswith("```"):
+                        content_text = content_text[3:]
+                    if content_text.endswith("```"):
+                        content_text = content_text[:-3]
+                    content_text = content_text.strip()
+                    
+                    parsed = json.loads(content_text)
+                    output_char_count = len(json.dumps(parsed, ensure_ascii=False))
+                    
+                    time_taken = time.time() - start_time
+                    logger.info(
+                        f"Category selection completed in {time_taken:.2f}s - "
+                        f"Selected: {parsed.get('category', {}).get('category_path', 'N/A')}"
+                    )
+                    
+                    # Log analytics
+                    analytics_service.log_analytics(
+                        agent_type="image_to_form_v2",
+                        model=self.MODEL,
+                        provider="OpenRouter",
+                        prompt_tokens=prompt_tokens,
+                        completion_tokens=completion_tokens,
+                        total_tokens=total_tokens,
+                        cached_tokens=cached_tokens,
+                        reasoning_tokens=reasoning_tokens,
+                        cost=cost,
+                        input_char_count=input_char_count,
+                        output_char_count=output_char_count,
+                        time_taken_seconds=time_taken,
+                        target_language=language,
+                        status="success",
+                        error_message=None
+                    )
+                    
+                    return parsed
+                else:
+                    raise ValueError("No choices in API response")
+                    
+            except httpx.HTTPStatusError as e:
+                error_detail = f"OpenRouter API error: {e.response.status_code}"
+                logger.error(f"HTTP error in category selection: {error_detail}")
+                
+                time_taken = time.time() - start_time
+                analytics_service.log_analytics(
+                    agent_type="image_to_form_v2",
+                    model=self.MODEL,
+                    provider="OpenRouter",
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
+                    total_tokens=total_tokens,
+                    cached_tokens=cached_tokens,
+                    reasoning_tokens=reasoning_tokens,
+                    cost=cost,
+                    input_char_count=input_char_count,
+                    output_char_count=0,
+                    time_taken_seconds=time_taken,
+                    target_language=language,
+                    status="error",
+                    error_message=error_detail
+                )
+                
+                raise Exception(error_detail)
+            except json.JSONDecodeError as e:
+                logger.error(f"Failed to parse JSON response in category selection: {str(e)}")
+                raise Exception(f"Failed to parse category selection response: {str(e)}")
+            except Exception as e:
+                logger.error(f"Error in category selection: {str(e)}", exc_info=True)
+                raise
+
+    def _build_category_selection_prompt(
+        self,
+        visual_description: str,
+        candidate_categories: List[Dict[str, Any]],
+        language: str,
+        image_count: int = 1
+    ) -> str:
+        """Build prompt for category selection and output generation (aligned with marketplace prompt)."""
+        
+        image_text = "these images" if image_count > 1 else "this image"
+        image_instruction = f"Analyze all {image_count} images provided" if image_count > 1 else "Analyze this image"
+        
+        categories_section = ""
+        for i, cat in enumerate(candidate_categories, 1):
+            attrs = ", ".join(cat.get("relevant_attributes", []))
+            categories_section += f"""
+Category {i}:
+- ID Path: {cat.get('id_path', '')}
+- Category Path: {cat.get('category_path', '')}
+- Relevant Attributes for this category: {attrs}
+"""
+        
+        prompt = f"""{image_instruction} and extract all relevant information for a marketplace listing form.
+All {image_text} show the same product from different angles or views. Combine information from all images to get a complete picture of the product.
+
+FIRST: Select the BEST matching category from the following CANDIDATE CATEGORIES. Use the selected category's "Relevant Attributes" list when filling the attributes field below.
+
+CANDIDATE CATEGORIES (choose exactly one):
+{categories_section}
+
+VISUAL DESCRIPTION OF THE PRODUCT (for context):
+{visual_description}
+
+Respond ONLY with a valid JSON object in {language} language. Do not include any markdown formatting or explanations outside the JSON.
+
+REQUIRED FIELDS (always include these):
+- title: Product/item title (string, required) - generate from the images
+- description: Detailed, marketing-friendly description of the product/item (string, required) - generate by looking at the images; make it compelling and appealing to buyers; highlight key benefits/features and condition
+- category: The selected category ONLY - use this exact format: {{ "id_path": "<id_path of selected category>", "category_path": "<category_path of selected category>" }}
+- condition: Condition of the item. Must be one of the following exact values (string, or null if not determinable):
+  * "Brand New or Unused": never opened or used
+  * "Like New": opened but looks and works like new
+  * "Gently Used or Excellent Condition": minor signs of use
+  * "Good Condition": visible wear but fully functional
+  * "Fair Condition": heavily used but still works
+  * "For Parts or Not Working": damaged or needs repair
+  * "Not Applicable": condition does not apply to this item
+
+ATTRIBUTES (include ONLY attributes from the selected category's "Relevant Attributes" list above):
+Analyze the product in the images and extract ONLY the attributes that are in the selected category's relevant attributes list AND that are visible or determinable for this product.
+You may also include any of these if they are in the selected category's list and relevant:
+- Brand, Model, Color, Size, Weight, Material
+- Memory/RAM, Storage, Hard Drive Size, Processor, Cores
+- Screen Size, Resolution, Battery Capacity, Operating System
+- Network Type, Camera, Battery Life
+- Gender, Season, Year
+- Mileage, Fuel Type, Transmission
+- Dimensions, Condition Details, Warranty, Accessories Included
+
+CRITICAL INSTRUCTIONS:
+1. Analyze ALL provided images together to extract comprehensive information about the product
+2. Generate the description by looking at the images - describe what you see: features, condition, key selling points
+3. For the "condition" field, you MUST use one of the exact values listed above. Analyze the images carefully to determine the most appropriate condition based on visible wear, packaging, and usage signs
+4. Include ONLY attributes that are in the selected category's relevant attributes list AND relevant to the product shown in the images
+5. Do NOT include attributes that are not in the selected category's list or not applicable (e.g., don't include "Mileage" for a smartphone)
+6. Attribute names should be in English (camelCase or Title Case)
+7. Attribute values should be in {language} language (except for condition which must use the exact English values listed)
+8. If an attribute is not visible or cannot be determined from any of the images, do NOT include it in the response
+9. All text (title, description, tags, attribute values) should be in {language} language (except condition field)
+10. Be accurate and only extract information that is clearly visible in the images
+11. Use information from all images to build a complete product description
+
+Response format:
+{{
+  "title": "Product Title",
+  "description": "Detailed description generated from the images...",
+  "category": {{ "id_path": "selected_id_path", "category_path": "Selected > Category > Path" }},
+  "condition": "Brand New or Unused",
+  "attributes": {{
+    "Brand": "Brand Name",
+    "Model": "Model XYZ",
+    "Color": "Black"
+  }}
+}}
+
+Example for a smartphone (category selected: Mobile phones > Smartphones):
+{{
+  "title": "iPhone 15 Pro",
+  "description": "Latest iPhone with advanced features...",
+  "category": {{ "id_path": "3638 > 3640", "category_path": "Mobile phones > Smartphones" }},
+  "condition": "Brand New or Unused",
+  "attributes": {{
+    "Brand": "Apple",
+    "Model": "iPhone 15 Pro",
+    "Color": "Titanium Blue",
+    "Storage": "256GB",
+    "Screen Size": "6.1 inches",
+    "Battery Capacity": "3274 mAh",
+    "Operating System": "iOS 17"
+  }}
+}}
+
+Example for clothing:
+{{
+  "title": "Nike Running Shoes",
+  "description": "Comfortable running shoes...",
+  "category": {{ "id_path": "1482 > 1500", "category_path": "Clothing & Fashion > Shoes" }},
+  "condition": "Brand New or Unused",
+  "attributes": {{
+    "Brand": "Nike",
+    "Color": "Black/White",
+    "Size": "10",
+    "Gender": "Unisex",
+    "Material": "Mesh and Synthetic"
+  }}
+}}
+
+Do not include any explanations or markdown formatting outside the JSON."""
+
+        return prompt
+
+    async def extract_visual_description_and_root_category(
+        self,
+        image_urls: List[str]
+    ) -> Dict[str, Any]:
+        """
+        Extract a factual visual description and determine the root category from product images.
+        
+        This is Step 1 of the image-to-form flow.
+        
+        Args:
+            image_urls: List of URLs of product images
+            
+        Returns:
+            Dictionary with:
+                - visual_description: Factual description of what's visible in the images
+                - root_category: One of the 23 predefined root categories
+        """
+        start_time = time.time()
+        logger.info(f"Extracting visual description and root category from {len(image_urls)} images")
+        
+        prompt = self._build_visual_extraction_prompt()
+        
+        # Prepare content with images
+        content = [{"type": "text", "text": prompt}]
+        for image_url in image_urls:
+            content.append({
+                "type": "image_url",
+                "image_url": {"url": image_url}
+            })
+        
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+            "HTTP-Referer": "https://github.com/your-repo",
+            "X-Title": "Ma3rood AI Agents Visual Extraction"
+        }
+        
+        payload = {
+            "model": self.MODEL,
+            "messages": [{"role": "user", "content": content}],
+            "temperature": 0.3,
+            "max_tokens": 1500
+        }
+        
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            try:
+                response = await client.post(
+                    self.base_url,
+                    headers=headers,
+                    json=payload
+                )
+                response.raise_for_status()
+                
+                result = response.json()
+                
+                if "choices" in result and len(result["choices"]) > 0:
+                    content_text = result["choices"][0]["message"]["content"]
+                    
+                    # Parse JSON from response
+                    content_text = content_text.strip()
+                    if content_text.startswith("```json"):
+                        content_text = content_text[7:]
+                    if content_text.startswith("```"):
+                        content_text = content_text[3:]
+                    if content_text.endswith("```"):
+                        content_text = content_text[:-3]
+                    content_text = content_text.strip()
+                    
+                    parsed = json.loads(content_text)
+                    
+                    # Validate root category
+                    root_category = parsed.get("root_category", "")
+                    if root_category not in self.ROOT_CATEGORIES:
+                        # Try to find closest match
+                        root_category_lower = root_category.lower()
+                        for valid_category in self.ROOT_CATEGORIES:
+                            if valid_category.lower() in root_category_lower or root_category_lower in valid_category.lower():
+                                root_category = valid_category
+                                break
+                        else:
+                            # Default to most generic category if no match
+                            logger.warning(f"Invalid root category '{parsed.get('root_category')}', defaulting to first match")
+                            root_category = self.ROOT_CATEGORIES[0]
+                    
+                    time_taken = time.time() - start_time
+                    logger.info(
+                        f"Visual extraction completed in {time_taken:.2f}s - "
+                        f"Root category: {root_category}"
+                    )
+                    
+                    return {
+                        "visual_description": parsed.get("visual_description", ""),
+                        "root_category": root_category
+                    }
+                else:
+                    raise ValueError("No choices in API response")
+                    
+            except httpx.HTTPStatusError as e:
+                error_detail = f"OpenRouter API error: {e.response.status_code}"
+                logger.error(f"HTTP error in visual extraction: {error_detail}")
+                raise Exception(error_detail)
+            except json.JSONDecodeError as e:
+                logger.error(f"Failed to parse JSON response in visual extraction: {str(e)}")
+                raise Exception(f"Failed to parse visual extraction response: {str(e)}")
+            except Exception as e:
+                logger.error(f"Error in visual extraction: {str(e)}", exc_info=True)
+                raise
+
+    def _build_visual_extraction_prompt(self) -> str:
+        """Build prompt for extracting visual description and root category"""
+        
+        root_categories_list = "\n".join([f"- {cat}" for cat in self.ROOT_CATEGORIES])
+        
+        prompt = f"""Analyze the product image(s) and provide:
+
+1. A factual visual description of the product - describe exactly what you see, including:
+   - The type/kind of product
+   - Physical characteristics (color, shape, size if apparent)
+   - Brand name or logos if visible
+   - Model information if visible
+   - Condition indicators (new in box, used, damaged, etc.)
+   - Any text, labels, or markings visible
+   - Accessories or items included
+   - Material if determinable
+
+2. The root category that best matches this product from the following list:
+
+{root_categories_list}
+
+IMPORTANT:
+- Be objective and factual in the description
+- Only describe what is actually visible in the image(s)
+- Do not make assumptions about features you cannot see
+- The visual description should be detailed enough to enable finding the right product category
+- Choose exactly ONE root category from the list above
+
+Respond ONLY with a valid JSON object:
+{{
+  "visual_description": "A detailed, factual description of what is visible in the image(s)...",
+  "root_category": "Exact category name from the list above"
+}}
+
+Do not include any explanations or markdown formatting outside the JSON."""
 
         return prompt
