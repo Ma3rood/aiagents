@@ -498,7 +498,6 @@ Example for clothing:
             "model": model_to_use,
             "messages": messages,
             "temperature": 0.2,  # Lower temperature for accurate translations
-            "max_tokens": 4000,
             "usage": {
                 "include": True
             }
