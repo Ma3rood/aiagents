@@ -33,6 +33,12 @@ class Settings(BaseSettings):
     QDRANT_API_KEY: Optional[str] = None
     QDRANT_COLLECTION_NAME: str = "Ma3roodAIAgentsMarketplaceCategories"
 
+    # Motor CSV Configuration
+    MOTOR_CATEGORIES_CSV_PATH: str = "applicaion_data/motor_categories.csv"
+    MOTOR_CATEGORY_FIELDS_CSV_PATH: str = "applicaion_data/motor_category_fields.csv"
+    MOTOR_FIELD_CONSTRAINTS_CSV_PATH: str = "applicaion_data/motor_field_constraints.csv"
+    MOTOR_CONFIDENCE_THRESHOLD: float = 0.5
+
     class Config:
         env_file = ".env"
 

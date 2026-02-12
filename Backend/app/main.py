@@ -34,6 +34,14 @@ tags_metadata = [
         "name": "translation",
         "description": "AI-powered translation endpoints for translating listing fields to different languages while preserving context and formatting. Supports multiple listing types: Marketplace, Motors, Services, Jobs, and Property.",
     },
+    {
+        "name": "category-embeddings",
+        "description": "Generate semantic descriptions and embeddings for all categories and store them in QDrant",
+    },
+    {
+        "name": "motor-image-to-form",
+        "description": "Motor Image-to-Form AI Agent. Analyzes vehicle/motor images and returns a pre-filled listing form with confidence scores, driven by CSV-defined schemas. Supports 13 motor categories: Cars, Motorbikes, Boats & marine, Trucks, and more.",
+    },
 ]
 
 app = FastAPI(
@@ -114,7 +122,9 @@ async def root():
         "api_prefix": settings.API_V1_PREFIX,
         "endpoints": {
             "health": f"{settings.API_V1_PREFIX}/health",
-            "translation": f"{settings.API_V1_PREFIX}/translation"
+            "translation": f"{settings.API_V1_PREFIX}/translation",
+            "category-embeddings": f"{settings.API_V1_PREFIX}/category-embeddings",
+            "motor_image_to_form": f"{settings.API_V1_PREFIX}/motor-image-to-form"
         }
     }
 

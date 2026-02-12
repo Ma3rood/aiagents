@@ -23,7 +23,7 @@ class OpenRouterService:
     """Service for interacting with OpenRouter API using Qwen3 VL model"""
     
     MODEL = "qwen/qwen3-vl-235b-a22b-instruct"  # Vision model for image processing
-    TEXT_MODEL = "docker.io/ai/qwen3-vl:latest"  # Text model for translation and text tasks
+    TEXT_MODEL = "qwen/qwen3-235b-a22b"  # Text model for translation and text tasks
     EMBEDDING_MODEL = "docker.io/ai/qwen3-embedding:8B-Q4_K_M"  # Embedding model for semantic search
     
     # Root categories for marketplace classification
@@ -1719,3 +1719,589 @@ Respond ONLY with a valid JSON object:
 Do not include any explanations or markdown formatting outside the JSON."""
 
         return prompt
+
+    # ------------------------------------------------------------------
+    # Motor-specific VLM methods
+    # ------------------------------------------------------------------
+
+    # Fixed motor categories (13)
+    MOTOR_CATEGORIES = [
+        "Cars",
+        "Motorbikes",
+        "Boats & marine",
+        "Car parts & accessories",
+        "Aircraft",
+        "Buses",
+        "Car stereos",
+        "Caravans & motorhomes",
+        "Horse floats",
+        "Specialist cars",
+        "Trailers",
+        "Trucks",
+        "Wrecked cars",
+    ]
+
+    CONDITION_VALUES = [
+        "Brand New or Unused",
+        "Like New",
+        "Gently Used or Excellent Condition",
+        "Good Condition",
+        "Fair Condition",
+        "For Parts or Not Working",
+        "Not Applicable",
+    ]
+
+    async def detect_motor_category(
+        self,
+        image_urls: List[str],
+    ) -> Dict[str, Any]:
+        """
+        Stage 1 -- Detect which of the 13 motor categories the image belongs to.
+
+        Returns dict with keys: category, confidence, reasoning.
+        """
+        start_time = time.time()
+        logger.info(f"Motor Stage 1: Detecting motor category from {len(image_urls)} image(s)")
+
+        prompt = self._build_motor_category_detection_prompt()
+
+        content: List[Dict[str, Any]] = [{"type": "text", "text": prompt}]
+        for url in image_urls:
+            content.append({"type": "image_url", "image_url": {"url": url}})
+
+        headers = self._motor_headers("Motor Category Detection")
+        payload = {
+            "model": self.MODEL,
+            "messages": [{"role": "user", "content": content}],
+            "temperature": 0.2,
+            "max_tokens": 500,
+            "usage": {"include": True},
+        }
+
+        analytics_service = get_analytics_service()
+
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            try:
+                response = await client.post(self.base_url, headers=headers, json=payload)
+                response.raise_for_status()
+                result = response.json()
+
+                parsed = self._extract_json_from_result(result)
+
+                # Validate category
+                category = parsed.get("category", "")
+                if category not in self.MOTOR_CATEGORIES:
+                    category = self._fuzzy_match_motor_category(category)
+
+                time_taken = time.time() - start_time
+                self._log_motor_analytics(
+                    analytics_service, result, time_taken, len(prompt),
+                    len(json.dumps(parsed, ensure_ascii=False)), "motor_category_detection",
+                )
+                logger.info(
+                    f"Motor Stage 1 complete in {time_taken:.2f}s -- "
+                    f"category={category}, confidence={parsed.get('confidence', 'N/A')}"
+                )
+
+                return {
+                    "category": category,
+                    "confidence": float(parsed.get("confidence", 0.0)),
+                    "reasoning": parsed.get("reasoning", ""),
+                }
+            except Exception as e:
+                time_taken = time.time() - start_time
+                self._log_motor_analytics(
+                    analytics_service, {}, time_taken, len(prompt), 0,
+                    "motor_category_detection", error=str(e),
+                )
+                logger.error(f"Motor Stage 1 failed: {e}", exc_info=True)
+                raise
+
+    async def extract_motor_visual_facts(
+        self,
+        image_urls: List[str],
+    ) -> Dict[str, Any]:
+        """
+        Stage 2 -- Extract only visually neutral, observable facts from image(s).
+        No form schema is referenced in the prompt.
+
+        Returns dict with keys: facts (list[str]), raw_description (str).
+        """
+        start_time = time.time()
+        logger.info(f"Motor Stage 2: Extracting visual facts from {len(image_urls)} image(s)")
+
+        prompt = self._build_motor_visual_facts_prompt()
+
+        content: List[Dict[str, Any]] = [{"type": "text", "text": prompt}]
+        for url in image_urls:
+            content.append({"type": "image_url", "image_url": {"url": url}})
+
+        headers = self._motor_headers("Motor Visual Facts")
+        payload = {
+            "model": self.MODEL,
+            "messages": [{"role": "user", "content": content}],
+            "temperature": 0.3,
+            "max_tokens": 1500,
+            "usage": {"include": True},
+        }
+
+        analytics_service = get_analytics_service()
+
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            try:
+                response = await client.post(self.base_url, headers=headers, json=payload)
+                response.raise_for_status()
+                result = response.json()
+
+                parsed = self._extract_json_from_result(result)
+
+                time_taken = time.time() - start_time
+                self._log_motor_analytics(
+                    analytics_service, result, time_taken, len(prompt),
+                    len(json.dumps(parsed, ensure_ascii=False)), "motor_visual_facts",
+                )
+                raw_facts = parsed.get("facts", [])
+                facts = self._normalize_facts(raw_facts)
+                logger.info(f"Motor Stage 2 complete in {time_taken:.2f}s -- {len(facts)} facts")
+
+                return {
+                    "facts": facts,
+                    "raw_description": parsed.get("raw_description", ""),
+                }
+            except Exception as e:
+                time_taken = time.time() - start_time
+                self._log_motor_analytics(
+                    analytics_service, {}, time_taken, len(prompt), 0,
+                    "motor_visual_facts", error=str(e),
+                )
+                logger.error(f"Motor Stage 2 failed: {e}", exc_info=True)
+                raise
+
+    async def detect_motor_category_and_visual_facts(
+        self,
+        image_urls: List[str],
+    ) -> Dict[str, Any]:
+        """
+        Combined Stage 1+2 -- single VLM call that returns both category
+        detection and visual facts.  Saves one round-trip.
+
+        Returns dict with keys: category, confidence, reasoning, facts, raw_description.
+        """
+        start_time = time.time()
+        logger.info(
+            f"Motor Stage 1+2 (combined): Detecting category and extracting facts "
+            f"from {len(image_urls)} image(s)"
+        )
+
+        prompt = self._build_motor_combined_prompt()
+
+        content: List[Dict[str, Any]] = [{"type": "text", "text": prompt}]
+        for url in image_urls:
+            content.append({"type": "image_url", "image_url": {"url": url}})
+
+        headers = self._motor_headers("Motor Combined Detection")
+        payload = {
+            "model": self.MODEL,
+            "messages": [{"role": "user", "content": content}],
+            "temperature": 0.2,
+            "max_tokens": 2000,
+            "usage": {"include": True},
+        }
+
+        analytics_service = get_analytics_service()
+
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            try:
+                response = await client.post(self.base_url, headers=headers, json=payload)
+                response.raise_for_status()
+                result = response.json()
+
+                parsed = self._extract_json_from_result(result)
+
+                category = parsed.get("category", "")
+                if category not in self.MOTOR_CATEGORIES:
+                    category = self._fuzzy_match_motor_category(category)
+
+                time_taken = time.time() - start_time
+                self._log_motor_analytics(
+                    analytics_service, result, time_taken, len(prompt),
+                    len(json.dumps(parsed, ensure_ascii=False)), "motor_combined_detection",
+                )
+                raw_facts = parsed.get("facts", [])
+                facts = self._normalize_facts(raw_facts)
+                logger.info(
+                    f"Motor Stage 1+2 complete in {time_taken:.2f}s -- "
+                    f"category={category}, facts={len(facts)}"
+                )
+
+                return {
+                    "category": category,
+                    "confidence": float(parsed.get("confidence", 0.0)),
+                    "reasoning": parsed.get("reasoning", ""),
+                    "facts": facts,
+                    "raw_description": parsed.get("raw_description", ""),
+                }
+            except Exception as e:
+                time_taken = time.time() - start_time
+                self._log_motor_analytics(
+                    analytics_service, {}, time_taken, len(prompt), 0,
+                    "motor_combined_detection", error=str(e),
+                )
+                logger.error(f"Motor Stage 1+2 failed: {e}", exc_info=True)
+                raise
+
+    async def generate_motor_field_values(
+        self,
+        image_urls: List[str],
+        visual_facts: List[str],
+        raw_description: str,
+        eligible_fields: List[Dict[str, Any]],
+        category: str = "",
+    ) -> Dict[str, Any]:
+        """
+        Stage 5 -- Fill eligible fields using visual facts + constraints.
+
+        *eligible_fields* is a list of dicts, each with keys:
+            field_name, required, depends_on, allowed_values, source
+
+        Returns dict mapping field_name -> {value, confidence}.
+        Description is included as a regular form field.
+        """
+        start_time = time.time()
+        logger.info(
+            f"Motor Stage 5: Generating field values for {len(eligible_fields)} fields "
+            f"from {len(image_urls)} image(s)"
+        )
+
+        prompt = self._build_motor_field_value_prompt(
+            visual_facts, raw_description, eligible_fields, category=category,
+        )
+
+        content: List[Dict[str, Any]] = [{"type": "text", "text": prompt}]
+        for url in image_urls:
+            content.append({"type": "image_url", "image_url": {"url": url}})
+
+        headers = self._motor_headers("Motor Field Value Generator")
+        payload = {
+            "model": self.MODEL,
+            "messages": [{"role": "user", "content": content}],
+            "temperature": 0.3,
+            # Keep max_tokens modest; the JSON with all fields should comfortably fit
+            # within this limit while avoiding provider-side 400s for overly large
+            # generation requests.
+            "max_tokens": 1500,
+            "usage": {"include": True},
+        }
+
+        analytics_service = get_analytics_service()
+
+        async with httpx.AsyncClient(timeout=90.0) as client:
+            try:
+                response = await client.post(self.base_url, headers=headers, json=payload)
+                response.raise_for_status()
+                result = response.json()
+
+                parsed = self._extract_json_from_result(result)
+
+                time_taken = time.time() - start_time
+                self._log_motor_analytics(
+                    analytics_service, result, time_taken, len(prompt),
+                    len(json.dumps(parsed, ensure_ascii=False)), "motor_field_values",
+                )
+                logger.info(f"Motor Stage 5 complete in {time_taken:.2f}s -- {len(parsed)} field values")
+
+                return parsed
+            except httpx.HTTPStatusError as e:
+                # Try to extract detailed error information from OpenRouter
+                error_detail = f"OpenRouter API error: {e.response.status_code}"
+                try:
+                    err_json = e.response.json()
+                    if isinstance(err_json, dict):
+                        msg = (
+                            err_json.get("error", {}).get("message")
+                            or err_json.get("message")
+                        )
+                        if msg:
+                            error_detail = msg
+                except Exception:
+                    # Fallback to plain text if JSON parsing fails
+                    if e.response.text:
+                        error_detail = f"{error_detail} - {e.response.text}"
+
+                time_taken = time.time() - start_time
+                self._log_motor_analytics(
+                    analytics_service, {}, time_taken, len(prompt), 0,
+                    "motor_field_values", error=error_detail,
+                )
+                logger.error(f"Motor Stage 5 HTTP error: {error_detail}", exc_info=True)
+                raise Exception(error_detail)
+            except Exception as e:
+                time_taken = time.time() - start_time
+                self._log_motor_analytics(
+                    analytics_service, {}, time_taken, len(prompt), 0,
+                    "motor_field_values", error=str(e),
+                )
+                logger.error(f"Motor Stage 5 failed: {e}", exc_info=True)
+                raise
+
+    # ------------------------------------------------------------------
+    # Motor prompt builders
+    # ------------------------------------------------------------------
+
+    def _build_motor_category_detection_prompt(self) -> str:
+        categories_list = "\n".join(f"- {c}" for c in self.MOTOR_CATEGORIES)
+        return f"""You are a vehicle classification expert. Analyze the provided image(s) and determine which ONE of the following motor categories best matches the item shown.
+
+MOTOR CATEGORIES (choose exactly one):
+{categories_list}
+
+INSTRUCTIONS:
+1. Look at the image(s) carefully.
+2. Select the single best-matching category from the list above.
+3. Provide a confidence score between 0.0 and 1.0 indicating how certain you are.
+4. Provide a brief reasoning (1-2 sentences) explaining your choice.
+
+Respond ONLY with a valid JSON object. No markdown, no explanations outside the JSON.
+
+{{
+  "category": "Exact category name from the list above",
+  "confidence": 0.92,
+  "reasoning": "Brief explanation of why this category was chosen"
+}}"""
+
+    def _build_motor_visual_facts_prompt(self) -> str:
+        return """You are a vehicle visual analyst. Analyze the provided image(s) of a vehicle or motor-related item and extract both direct observations and reasonable inferences.
+
+RULES:
+1. First, list all facts that are directly visible in the image(s): type of vehicle/item, visible brand/logos/badges, color(s), body shape, visible damage or wear, interior features if visible, accessories, text/labels/stickers, overall condition indicators.
+2. Then, add reasonable inferences you can deduce from what you identified. For example, if you identify a "Honda City" badge, you can infer typical specs like fuel type, engine size, transmission type, and seating capacity that are standard for that model.
+3. Tag each fact as either "observed" (directly visible) or "inferred" (reasonably deduced from identified make/model/type).
+4. Do NOT infer mileage, exact price, or registration details -- these are truly unknowable from images.
+5. Be specific. For example, say "Toyota badge visible on grille" rather than just "it's a Toyota".
+6. Combine information from all images if multiple are provided.
+
+Respond ONLY with a valid JSON object:
+
+{
+  "facts": [
+    {"text": "Honda badge visible on grille", "type": "observed"},
+    {"text": "City Aspire model badge on rear", "type": "observed"},
+    {"text": "Honda City typically comes with 1.2L petrol engine", "type": "inferred"},
+    {"text": "Standard seating capacity for this sedan is 5", "type": "inferred"}
+  ],
+  "raw_description": "A cohesive 2-3 sentence summary combining observations and reasonable inferences."
+}"""
+
+    def _build_motor_combined_prompt(self) -> str:
+        categories_list = "\n".join(f"- {c}" for c in self.MOTOR_CATEGORIES)
+        return f"""You are a vehicle classification and visual analysis expert. Analyze the provided image(s) and perform TWO tasks:
+
+TASK 1 - CATEGORY DETECTION:
+Select the single best-matching motor category from this list:
+{categories_list}
+
+Provide a confidence score (0.0-1.0) and brief reasoning.
+
+TASK 2 - VISUAL FACTS AND INFERENCES:
+Extract both direct observations and reasonable inferences about the item.
+- List facts directly visible in the image(s): type, visible brand/logos, color, body shape, damage/wear, interior, accessories, text/labels, condition indicators.
+- Then add reasonable inferences you can deduce from the identified make/model/type (e.g. typical fuel type, engine size, seating capacity, transmission).
+- Tag each fact as "observed" or "inferred".
+- Do NOT infer mileage, exact price, or registration details.
+- Be specific and factual.
+
+Respond ONLY with a valid JSON object. No markdown, no explanations outside the JSON.
+
+{{
+  "category": "Exact category name from the list above",
+  "confidence": 0.92,
+  "reasoning": "Brief explanation",
+  "facts": [
+    {{"text": "fact 1", "type": "observed"}},
+    {{"text": "fact 2", "type": "inferred"}}
+  ],
+  "raw_description": "A cohesive 2-3 sentence summary combining observations and inferences."
+}}"""
+
+    def _build_motor_field_value_prompt(
+        self,
+        visual_facts: List[str],
+        raw_description: str,
+        eligible_fields: List[Dict[str, Any]],
+        category: str = "",
+    ) -> str:
+        facts_text = "\n".join(f"- {f}" for f in visual_facts)
+
+        fields_section = ""
+        for ef in eligible_fields:
+            line = f"- {ef['field_name']}"
+            if ef.get("required"):
+                line += " (REQUIRED)"
+            if ef.get("allowed_values"):
+                line += f" -- allowed values: {' | '.join(ef['allowed_values'])}"
+            elif ef.get("source") == "free_text":
+                line += " -- free text"
+            if ef.get("depends_on"):
+                line += f" [depends on: {ef['depends_on']}]"
+            fields_section += line + "\n"
+
+        # Category-specific guidance for car parts / accessories / stereos
+        parts_categories = {"Car parts & accessories", "Car stereos"}
+        if category in parts_categories:
+            category_specific_instructions = f"""
+IMPORTANT — CATEGORY-SPECIFIC GUIDANCE (category: "{category}"):
+This listing is for a car PART or ACCESSORY, NOT a complete vehicle.
+Fill the fields with the following semantics:
+- "Make": The vehicle manufacturer this part is designed for (e.g., Toyota, Honda, BMW). If the part is universal, write "Universal".
+- "Part": The name/type of the part being sold (e.g., headlights, side mirror, bumper, stereo, amplifier). Be specific.
+- "Compatible Model": The specific vehicle model this part fits (e.g., Corolla, Civic, City). If universal, write "Universal".
+- "Year": The model year(s) the part is compatible with (e.g., 2020, 2018-2022). If unknown, make your best guess based on the part design.
+- "Condition": Whether the part is New or Used. Assess from visual evidence — packaging, wear, scratches, etc.
+- "Color": The color of the part itself, if applicable and visible.
+- "Description": Write a 2-4 sentence marketing-style description for this car part/accessory. Mention the part type, compatible vehicles, condition, and any notable features. Appeal to buyers looking for replacement parts or upgrades.
+- "Title": Write a concise listing title mentioning the part name, compatible make/model, and condition (e.g., "New Toyota Corolla LED Headlights 2018-2022").
+"""
+        else:
+            category_specific_instructions = ""
+
+        return f"""You are a vehicle listing form assistant. Your job is to fill in as many form fields as possible using the visual evidence, your automotive knowledge, and reasonable inference. The user will review and correct all values, so it is much better to provide a reasonable best guess with a lower confidence score than to leave a field empty.
+
+VISUAL FACTS AND INFERENCES:
+{facts_text}
+
+VISUAL SUMMARY:
+{raw_description}
+
+FIELDS TO FILL:
+{fields_section}
+{category_specific_instructions}
+INSTRUCTIONS:
+1. Use a tiered approach to fill each field:
+   - TIER 1 (confidence 0.8-1.0): Value is directly visible in the image (e.g., badge, label, obvious color).
+   - TIER 2 (confidence 0.5-0.7): Value can be reasonably inferred from the identified make/model/type and your automotive knowledge (e.g., a Honda City is typically petrol, a sedan typically has 5 seats, 4 doors).
+   - TIER 3 (confidence 0.2-0.4): Value is a reasonable educated guess based on category/region/body type but could easily be wrong. Still provide it -- the user can correct it.
+   - NULL (confidence 0.0): ONLY use null when the field is truly unknowable from images and inference combined (e.g., exact mileage, exact year with no visible badge, registration details).
+2. If a field has allowed values, you MUST pick ONLY from the allowed list shown next to that field. If unsure which, pick the most likely one with a lower confidence rather than null.
+3. IMPORTANT: The user will review every value. Providing a reasonable guess that the user can quickly confirm or change is far more helpful than leaving fields empty.
+4. For the "Description" form field: write a 2-4 sentence marketing-style listing description that appeals to buyers. Base it on the images and the filled fields. Highlight condition, key features, and selling points. Write in a persuasive, professional tone. Use the same value/confidence format as all other fields.
+5. For the "Title" form field: write a concise, appealing listing title based on the identified make, model, year, and key feature.
+
+Respond ONLY with a valid JSON object where each key is a field name:
+
+{{
+  "Field Name": {{
+    "value": "the value or null",
+    "confidence": 0.85
+  }},
+  "Description": {{
+    "value": "A 2-4 sentence marketing description...",
+    "confidence": 0.8
+  }},
+  "Another Field": {{
+    "value": "best guess value",
+    "confidence": 0.4
+  }}
+}}"""
+
+    # ------------------------------------------------------------------
+    # Motor helper methods
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _normalize_facts(raw_facts: list) -> List[str]:
+        """
+        Normalize facts from VLM output into a flat list of strings.
+        Handles both old format (list of strings) and new format
+        (list of dicts with 'text' and 'type' keys).
+        Inferred facts are tagged with '[inferred]' prefix.
+        """
+        normalized: List[str] = []
+        for item in raw_facts:
+            if isinstance(item, str):
+                normalized.append(item)
+            elif isinstance(item, dict):
+                text = item.get("text", "")
+                fact_type = item.get("type", "observed")
+                if fact_type == "inferred":
+                    normalized.append(f"[inferred] {text}")
+                else:
+                    normalized.append(text)
+            else:
+                normalized.append(str(item))
+        return normalized
+
+    def _motor_headers(self, title: str) -> Dict[str, str]:
+        return {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+            "HTTP-Referer": "https://github.com/your-repo",
+            "X-Title": f"Ma3rood AI Agents {title}",
+        }
+
+    def _extract_json_from_result(self, result: Dict[str, Any]) -> Dict[str, Any]:
+        """Extract and parse JSON from an OpenRouter API response."""
+        if "choices" not in result or len(result["choices"]) == 0:
+            raise ValueError("No choices in API response")
+
+        content_text = result["choices"][0]["message"]["content"]
+        content_text = content_text.strip()
+
+        # Strip markdown fences
+        if content_text.startswith("```json"):
+            content_text = content_text[7:]
+        if content_text.startswith("```"):
+            content_text = content_text[3:]
+        if content_text.endswith("```"):
+            content_text = content_text[:-3]
+        content_text = content_text.strip()
+
+        # Fix common LLM JSON issues
+        content_text = _fix_trailing_comma_json(content_text)
+
+        return json.loads(content_text)
+
+    def _fuzzy_match_motor_category(self, candidate: str) -> str:
+        """Best-effort fuzzy match against MOTOR_CATEGORIES. Raises on failure."""
+        candidate_lower = candidate.lower().strip()
+        for valid in self.MOTOR_CATEGORIES:
+            if valid.lower() == candidate_lower:
+                return valid
+        # Substring match
+        for valid in self.MOTOR_CATEGORIES:
+            if valid.lower() in candidate_lower or candidate_lower in valid.lower():
+                logger.warning(f"Fuzzy-matched motor category '{candidate}' -> '{valid}'")
+                return valid
+        raise ValueError(
+            f"Motor category '{candidate}' does not match any of: {self.MOTOR_CATEGORIES}"
+        )
+
+    @staticmethod
+    def _log_motor_analytics(
+        analytics_service,
+        result: Dict[str, Any],
+        time_taken: float,
+        input_chars: int,
+        output_chars: int,
+        agent_type: str,
+        error: Optional[str] = None,
+    ) -> None:
+        """Log motor agent analytics to CSV."""
+        usage = result.get("usage", {})
+        prompt_details = usage.get("prompt_tokens_details", {})
+        completion_details = usage.get("completion_tokens_details", {})
+        analytics_service.log_analytics(
+            agent_type=agent_type,
+            model=OpenRouterService.MODEL,
+            provider="OpenRouter",
+            prompt_tokens=usage.get("prompt_tokens", 0),
+            completion_tokens=usage.get("completion_tokens", 0),
+            total_tokens=usage.get("total_tokens", 0),
+            cached_tokens=prompt_details.get("cached_tokens", 0),
+            reasoning_tokens=completion_details.get("reasoning_tokens", 0),
+            cost=usage.get("cost", 0),
+            input_char_count=input_chars,
+            output_char_count=output_chars,
+            time_taken_seconds=time_taken,
+            status="error" if error else "success",
+            error_message=error,
+        )
