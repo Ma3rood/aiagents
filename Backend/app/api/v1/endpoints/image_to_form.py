@@ -161,27 +161,27 @@ async def _process_with_semantic_search(
         query_embedding = await openrouter_service.create_embedding(visual_description)
         
         # Search with root category filter
-        candidate_categories = qdrant_service.search_categories(
-            query_embedding=query_embedding,
-            root_category_filter=root_category,
-            top_k=5
-        )
+        # candidate_categories = qdrant_service.search_categories(
+        #     query_embedding=query_embedding,
+        #     root_category_filter=root_category,
+        #     top_k=5
+        # )
         
         # If no results with filter, try without filter
-        if len(candidate_categories) == 0:
-            logger.warning(f"Searching without root category filter")
-            candidate_categories = qdrant_service.search_categories(
-                query_embedding=query_embedding,
-                root_category_filter=None,
-                top_k=5
-            )
-        else:
-            logger.warning(f"Searching without root category filter")
-            candidate_categories.extend(qdrant_service.search_categories(
-                query_embedding=query_embedding,
-                root_category_filter=None,
-                top_k=5
-            ))
+        # if len(candidate_categories) == 0:
+        logger.warning(f"Searching without root category filter")
+        candidate_categories = qdrant_service.search_categories(
+            query_embedding=query_embedding,
+            root_category_filter=None,
+            top_k=5
+        )
+        # else:
+        #     logger.warning(f"Searching without root category filter")
+        #     candidate_categories.extend(qdrant_service.search_categories(
+        #         query_embedding=query_embedding,
+        #         root_category_filter=None,
+        #         top_k=5
+        #     ))
         
         if not candidate_categories:
             logger.error("No candidate categories found in semantic search")
