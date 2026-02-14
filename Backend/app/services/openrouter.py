@@ -2305,3 +2305,253 @@ Respond ONLY with a valid JSON object where each key is a field name:
             status="error" if error else "success",
             error_message=error,
         )
+
+    # ------------------------------------------------------------------
+    # Listing Description Generator
+    # ------------------------------------------------------------------
+
+    async def generate_listing_description(
+        self,
+        image_urls: List[str],
+        form_fields: Dict[str, Any],
+        language: str,
+    ) -> str:
+        """
+        Generate a market-appealing, customer-engaging listing description
+        from product images and form field values.
+
+        Uses the vision model when images are provided so the LLM can see
+        the actual product while crafting the copy.
+
+        Args:
+            image_urls: Product image URLs (used as visual context).
+            form_fields: Listing form field key-value pairs (e.g. title,
+                         category, condition, price, attributes …).
+            language: Target language for the description (e.g. "en", "ar").
+
+        Returns:
+            The generated description string.
+        """
+        start_time = time.time()
+        logger.info(
+            f"Generating listing description – images={len(image_urls)}, "
+            f"fields={len(form_fields)}, language={language}"
+        )
+
+        prompt = self._build_listing_description_prompt(form_fields, language)
+        input_char_count = len(prompt) + len(json.dumps(form_fields, ensure_ascii=False))
+
+        analytics_service = get_analytics_service()
+        status = "success"
+        error_message = None
+        output_char_count = 0
+        prompt_tokens = 0
+        completion_tokens = 0
+        total_tokens = 0
+        cached_tokens = 0
+        reasoning_tokens = 0
+        cost = 0.0
+
+        # Build message content – text prompt + images
+        content: List[Dict[str, Any]] = [{"type": "text", "text": prompt}]
+        for url in image_urls:
+            content.append({
+                "type": "image_url",
+                "image_url": {"url": url},
+            })
+
+        messages = [{"role": "user", "content": content}]
+
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+            "HTTP-Referer": "https://github.com/your-repo",
+            "X-Title": "Ma3rood AI Agents Listing Description Generator",
+        }
+
+        use_vision = len(image_urls) > 0
+        model_to_use = self.MODEL if use_vision else self.TEXT_MODEL
+
+        payload = {
+            "model": model_to_use,
+            "messages": messages,
+            "temperature": 0.7,  # Slightly creative for engaging copy
+            "max_tokens": 3000,
+            "usage": {"include": True},
+        }
+
+        async with httpx.AsyncClient(timeout=90.0) as client:
+            try:
+                logger.debug(
+                    f"Sending listing-description request – model={model_to_use}"
+                )
+                response = await client.post(
+                    self.base_url, headers=headers, json=payload
+                )
+                response.raise_for_status()
+
+                result = response.json()
+                logger.debug("Received listing-description response")
+
+                # Token usage
+                if "usage" in result:
+                    usage = result["usage"]
+                    prompt_tokens = usage.get("prompt_tokens", 0)
+                    completion_tokens = usage.get("completion_tokens", 0)
+                    total_tokens = usage.get("total_tokens", 0)
+                    cost = usage.get("cost", 0)
+                    prompt_details = usage.get("prompt_tokens_details", {})
+                    completion_details = usage.get("completion_tokens_details", {})
+                    cached_tokens = prompt_details.get("cached_tokens", 0)
+                    reasoning_tokens = completion_details.get("reasoning_tokens", 0)
+
+                if "choices" in result and len(result["choices"]) > 0:
+                    raw_content = result["choices"][0]["message"]["content"]
+                    # Strip markdown fences if present
+                    description = raw_content.strip()
+                    if description.startswith("```"):
+                        first_nl = description.find("\n")
+                        if first_nl != -1:
+                            description = description[first_nl + 1:]
+                    if description.endswith("```"):
+                        description = description[:-3]
+                    description = description.strip()
+
+                    output_char_count = len(description)
+                    logger.info(
+                        f"Listing description generated – "
+                        f"length={output_char_count} chars"
+                    )
+
+                    # Analytics
+                    time_taken_seconds = time.time() - start_time
+                    analytics_service.log_analytics(
+                        agent_type="listing_description",
+                        model=model_to_use,
+                        provider="OpenRouter",
+                        prompt_tokens=prompt_tokens,
+                        completion_tokens=completion_tokens,
+                        total_tokens=total_tokens,
+                        cached_tokens=cached_tokens,
+                        reasoning_tokens=reasoning_tokens,
+                        cost=cost,
+                        input_char_count=input_char_count,
+                        output_char_count=output_char_count,
+                        time_taken_seconds=time_taken_seconds,
+                        target_language=language,
+                        status=status,
+                        error_message=error_message,
+                    )
+
+                    return description
+                else:
+                    logger.error("No choices in listing-description API response")
+                    raise ValueError("No choices in API response")
+
+            except httpx.HTTPStatusError as e:
+                error_detail = f"OpenRouter API error: {e.response.status_code}"
+                logger.error(
+                    f"HTTP error (listing_description) – "
+                    f"status={e.response.status_code}"
+                )
+                if e.response.text:
+                    try:
+                        error_data = e.response.json()
+                        error_detail = error_data.get("error", {}).get(
+                            "message", error_detail
+                        )
+                    except Exception:
+                        error_detail = f"{error_detail} – {e.response.text}"
+
+                time_taken_seconds = time.time() - start_time
+                analytics_service.log_analytics(
+                    agent_type="listing_description",
+                    model=model_to_use,
+                    provider="OpenRouter",
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
+                    total_tokens=total_tokens,
+                    cached_tokens=cached_tokens,
+                    reasoning_tokens=reasoning_tokens,
+                    cost=cost,
+                    input_char_count=input_char_count,
+                    output_char_count=output_char_count,
+                    time_taken_seconds=time_taken_seconds,
+                    target_language=language,
+                    status="error",
+                    error_message=error_detail,
+                )
+                raise Exception(error_detail)
+
+            except httpx.RequestError as e:
+                error_detail = f"Request error: {str(e)}"
+                logger.error(
+                    f"Request error (listing_description): {e}", exc_info=True
+                )
+                time_taken_seconds = time.time() - start_time
+                analytics_service.log_analytics(
+                    agent_type="listing_description",
+                    model=model_to_use,
+                    provider="OpenRouter",
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
+                    total_tokens=total_tokens,
+                    cached_tokens=cached_tokens,
+                    reasoning_tokens=reasoning_tokens,
+                    cost=cost,
+                    input_char_count=input_char_count,
+                    output_char_count=output_char_count,
+                    time_taken_seconds=time_taken_seconds,
+                    target_language=language,
+                    status="error",
+                    error_message=error_detail,
+                )
+                raise Exception(error_detail)
+
+    # ------------------------------------------------------------------
+    # Prompt builder – Listing Description
+    # ------------------------------------------------------------------
+
+    def _build_listing_description_prompt(
+        self, form_fields: Dict[str, Any], language: str
+    ) -> str:
+        """Build the prompt that drives the listing-description generator."""
+
+        fields_json = json.dumps(form_fields, ensure_ascii=False, indent=2)
+
+        return f"""You are a world-class marketplace copywriter and salesperson.
+Your job is to write a compelling, market-appealing product listing description
+that makes buyers excited and ready to purchase.
+
+**Context – Listing form fields (JSON):**
+```json
+{fields_json}
+```
+
+**Images:** The product images are attached. Study them carefully for visual
+details such as color, condition, brand marks, accessories, and overall appeal.
+
+**Target language:** {language}
+
+**Instructions:**
+1. Write ONLY in the specified target language ({language}).
+2. Open with an attention-grabbing headline or hook sentence.
+3. Highlight the most attractive selling points derived from both the images
+   and the form fields (brand, condition, features, specifications).
+4. Use persuasive, benefit-oriented language — tell the buyer what they GAIN.
+5. Mention condition honestly but positively (e.g. "gently used" instead of
+   "second-hand").
+6. Include relevant details from the form fields naturally (don't just list
+   them — weave them into the narrative).
+7. If the images reveal details not captured in the form fields (e.g.
+   accessories in the photo, visible brand logo), mention them.
+8. End with a subtle call-to-action encouraging the buyer to act quickly
+   (e.g. "Don't miss this deal", "Message now before it's gone").
+9. Keep the description between 80-250 words — concise yet informative.
+10. Do NOT wrap the description in any JSON, code fences, or quotes.
+    Return ONLY the plain description text.
+11. Do NOT include any English text if the target language is not English.
+    Everything must be in the target language.
+12. Format with short paragraphs or bullet points for easy mobile reading.
+
+Now write the listing description:"""
