@@ -1,5 +1,5 @@
 from fastapi import APIRouter
-from app.api.v1.endpoints import health, image_to_form, translation, category_embeddings, motor_image_to_form, listing_description, listing_verification
+from app.api.v1.endpoints import health, image_to_form, translation, category_embeddings, motor_image_to_form, listing_description, listing_verification, listing_legitimacy
 
 api_router = APIRouter()
 
@@ -11,3 +11,4 @@ api_router.include_router(category_embeddings.router, prefix="/category-embeddin
 api_router.include_router(motor_image_to_form.router, prefix="/motor-image-to-form", tags=["motor-image-to-form"])
 api_router.include_router(listing_description.router, prefix="/listing-description", tags=["listing-description"])
 api_router.include_router(listing_verification.router, prefix="/listing-verification", tags=["listing-verification"])
+api_router.include_router(listing_legitimacy.router, prefix="/listing-legitimacy", tags=["listing-legitimacy"])

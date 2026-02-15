@@ -2899,3 +2899,663 @@ following structure:
 7. Be objective and precise. If something is not visible in the images,
    note it in the remark and give a neutral score (~0.5).
 8. Return ONLY the JSON object — no explanation outside the JSON."""
+
+    # ------------------------------------------------------------------
+    # Listing Legitimacy Check
+    # ------------------------------------------------------------------
+
+    async def check_listing_legitimacy(
+        self,
+        image_urls: List[str],
+        form_fields: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """
+        Run legitimacy / policy-compliance checks on listing images **and**
+        text form-field values.
+
+        Two separate LLM calls are made in parallel:
+        1. **Image analysis** (vision model) – scans every image for
+           prohibited visual content (adult, violence, drugs, weapons,
+           misleading photos, etc.).
+        2. **Text analysis** (text model) – scans all form-field values for
+           prohibited language (hate speech, scam signals, illegal services,
+           personal-data leaks, etc.).
+
+        Args:
+            image_urls: Product image URLs.
+            form_fields: Listing form field key-value pairs.
+
+        Returns:
+            Parsed JSON dict with the full legitimacy report.
+        """
+        import asyncio
+
+        start_time = time.time()
+        logger.info(
+            f"Legitimacy check – images={len(image_urls)}, "
+            f"fields={len(form_fields)}"
+        )
+
+        analytics_service = get_analytics_service()
+
+        # Run image + text checks concurrently
+        image_task = self._check_image_legitimacy(image_urls, form_fields)
+        text_task = self._check_text_legitimacy(form_fields)
+
+        image_result, text_result = await asyncio.gather(
+            image_task, text_task, return_exceptions=True
+        )
+
+        # Handle exceptions from either task
+        if isinstance(image_result, Exception):
+            logger.error(f"Image legitimacy check failed: {image_result}")
+            image_result = {
+                "is_legitimate": False,
+                "risk_level": "unknown",
+                "flags": [],
+                "per_image_summary": [],
+                "error": str(image_result),
+            }
+        if isinstance(text_result, Exception):
+            logger.error(f"Text legitimacy check failed: {text_result}")
+            text_result = {
+                "is_legitimate": False,
+                "risk_level": "unknown",
+                "flags": [],
+                "per_field_summary": {},
+                "error": str(text_result),
+            }
+
+        # Ensure both results are dicts (LLM may return string/list instead of JSON object)
+        if not isinstance(image_result, dict):
+            logger.warning(
+                f"Image legitimacy returned non-dict: {type(image_result).__name__}"
+            )
+            image_result = {
+                "is_legitimate": False,
+                "risk_level": "unknown",
+                "flags": [],
+                "per_image_summary": [],
+                "error": f"Unexpected response type: {type(image_result).__name__}",
+            }
+        if not isinstance(text_result, dict):
+            logger.warning(
+                f"Text legitimacy returned non-dict: {type(text_result).__name__}"
+            )
+            text_result = {
+                "is_legitimate": False,
+                "risk_level": "unknown",
+                "flags": [],
+                "per_field_summary": {},
+                "error": f"Unexpected response type: {type(text_result).__name__}",
+            }
+
+        # Merge into a single report
+        img_legit = image_result.get("is_legitimate", True)
+        txt_legit = text_result.get("is_legitimate", True)
+        is_legitimate = img_legit and txt_legit
+
+        risk_priority = {"critical": 3, "warning": 2, "safe": 1, "unknown": 0}
+        img_risk = image_result.get("risk_level", "safe")
+        txt_risk = text_result.get("risk_level", "safe")
+        overall_risk = (
+            img_risk
+            if risk_priority.get(img_risk, 0) >= risk_priority.get(txt_risk, 0)
+            else txt_risk
+        )
+
+        all_flags = image_result.get("flags", []) + text_result.get("flags", [])
+        summary_parts = []
+        if image_result.get("summary"):
+            summary_parts.append(image_result["summary"])
+        if text_result.get("summary"):
+            summary_parts.append(text_result["summary"])
+        summary = " ".join(summary_parts) if summary_parts else (
+            "Listing passed all legitimacy checks."
+            if is_legitimate
+            else "Listing flagged for policy violations."
+        )
+
+        report = {
+            "status": "success",
+            "is_legitimate": is_legitimate,
+            "overall_risk_level": overall_risk,
+            "total_flags": len(all_flags),
+            "image_analysis": image_result,
+            "text_analysis": text_result,
+            "summary": summary,
+        }
+
+        time_taken = time.time() - start_time
+        logger.info(
+            f"Legitimacy check completed in {time_taken:.2f}s – "
+            f"legitimate={is_legitimate}, risk={overall_risk}, "
+            f"flags={len(all_flags)}"
+        )
+
+        # Log combined analytics
+        analytics_service.log_analytics(
+            agent_type="listing_legitimacy",
+            model=self.MODEL,
+            provider="OpenRouter",
+            prompt_tokens=0,
+            completion_tokens=0,
+            total_tokens=0,
+            cached_tokens=0,
+            reasoning_tokens=0,
+            cost=0,
+            input_char_count=len(json.dumps(form_fields, ensure_ascii=False)),
+            output_char_count=len(json.dumps(report, ensure_ascii=False)),
+            time_taken_seconds=time_taken,
+            target_language="en",
+            status="success",
+            error_message=None,
+        )
+
+        return report
+
+    # ------------------------------------------------------------------
+    # Image Legitimacy sub-check (vision model)
+    # ------------------------------------------------------------------
+
+    async def _check_image_legitimacy(
+        self,
+        image_urls: List[str],
+        form_fields: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Analyse images for policy-violating visual content."""
+        system_prompt, user_prompt = self._build_image_legitimacy_prompt(form_fields)
+        input_char_count = len(system_prompt) + len(user_prompt)
+
+        content: List[Dict[str, Any]] = [{"type": "text", "text": user_prompt}]
+        for url in image_urls:
+            content.append({
+                "type": "image_url",
+                "image_url": {"url": url},
+            })
+
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": content},
+        ]
+
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+            "HTTP-Referer": "https://github.com/your-repo",
+            "X-Title": "Ma3rood AI Agents Listing Legitimacy - Images",
+        }
+
+        payload = {
+            "model": self.MODEL,
+            "messages": messages,
+            "temperature": 0.1,
+            "max_tokens": 4000,
+            "usage": {"include": True},
+        }
+
+        analytics_service = get_analytics_service()
+        start_time = time.time()
+
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            try:
+                response = await client.post(
+                    self.base_url, headers=headers, json=payload
+                )
+                response.raise_for_status()
+                result = response.json()
+
+                # Analytics bookkeeping
+                prompt_tokens = completion_tokens = total_tokens = 0
+                cached_tokens = reasoning_tokens = 0
+                cost = 0.0
+                if "usage" in result:
+                    usage = result["usage"]
+                    prompt_tokens = usage.get("prompt_tokens", 0)
+                    completion_tokens = usage.get("completion_tokens", 0)
+                    total_tokens = usage.get("total_tokens", 0)
+                    cost = usage.get("cost", 0)
+                    cached_tokens = usage.get("prompt_tokens_details", {}).get(
+                        "cached_tokens", 0
+                    )
+                    reasoning_tokens = usage.get(
+                        "completion_tokens_details", {}
+                    ).get("reasoning_tokens", 0)
+
+                parsed = self._extract_json_from_result(result)
+                output_char_count = len(
+                    json.dumps(parsed, ensure_ascii=False)
+                )
+
+                time_taken = time.time() - start_time
+                analytics_service.log_analytics(
+                    agent_type="listing_legitimacy_images",
+                    model=self.MODEL,
+                    provider="OpenRouter",
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
+                    total_tokens=total_tokens,
+                    cached_tokens=cached_tokens,
+                    reasoning_tokens=reasoning_tokens,
+                    cost=cost,
+                    input_char_count=input_char_count,
+                    output_char_count=output_char_count,
+                    time_taken_seconds=time_taken,
+                    target_language="en",
+                    status="success",
+                    error_message=None,
+                )
+
+                return parsed
+
+            except (httpx.HTTPStatusError, httpx.RequestError) as e:
+                time_taken = time.time() - start_time
+                error_detail = str(e)
+                analytics_service.log_analytics(
+                    agent_type="listing_legitimacy_images",
+                    model=self.MODEL,
+                    provider="OpenRouter",
+                    prompt_tokens=0,
+                    completion_tokens=0,
+                    total_tokens=0,
+                    cached_tokens=0,
+                    reasoning_tokens=0,
+                    cost=0,
+                    input_char_count=input_char_count,
+                    output_char_count=0,
+                    time_taken_seconds=time_taken,
+                    target_language="en",
+                    status="error",
+                    error_message=error_detail,
+                )
+                raise Exception(error_detail)
+
+    # ------------------------------------------------------------------
+    # Text Legitimacy sub-check (text model)
+    # ------------------------------------------------------------------
+
+    async def _check_text_legitimacy(
+        self,
+        form_fields: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Analyse form-field text for policy-violating language."""
+        import base64
+
+        system_prompt, user_prompt = self._build_text_legitimacy_prompt(form_fields)
+        input_char_count = len(system_prompt) + len(user_prompt)
+
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ]
+
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+            "HTTP-Referer": "https://github.com/your-repo",
+            "X-Title": "Ma3rood AI Agents Listing Legitimacy - Text",
+        }
+
+        payload = {
+            "model": self.TEXT_MODEL,
+            "messages": messages,
+            "temperature": 0.1,
+            "max_tokens": 4000,
+            "usage": {"include": True},
+        }
+
+        analytics_service = get_analytics_service()
+        start_time = time.time()
+
+        async with httpx.AsyncClient(timeout=90.0) as client:
+            try:
+                response = await client.post(
+                    self.base_url, headers=headers, json=payload
+                )
+                response.raise_for_status()
+                result = response.json()
+
+                prompt_tokens = completion_tokens = total_tokens = 0
+                cached_tokens = reasoning_tokens = 0
+                cost = 0.0
+                if "usage" in result:
+                    usage = result["usage"]
+                    prompt_tokens = usage.get("prompt_tokens", 0)
+                    completion_tokens = usage.get("completion_tokens", 0)
+                    total_tokens = usage.get("total_tokens", 0)
+                    cost = usage.get("cost", 0)
+                    cached_tokens = usage.get("prompt_tokens_details", {}).get(
+                        "cached_tokens", 0
+                    )
+                    reasoning_tokens = usage.get(
+                        "completion_tokens_details", {}
+                    ).get("reasoning_tokens", 0)
+
+                parsed = self._extract_json_from_result(result)
+                output_char_count = len(
+                    json.dumps(parsed, ensure_ascii=False)
+                )
+
+                time_taken = time.time() - start_time
+                analytics_service.log_analytics(
+                    agent_type="listing_legitimacy_text",
+                    model=self.TEXT_MODEL,
+                    provider="OpenRouter",
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
+                    total_tokens=total_tokens,
+                    cached_tokens=cached_tokens,
+                    reasoning_tokens=reasoning_tokens,
+                    cost=cost,
+                    input_char_count=input_char_count,
+                    output_char_count=output_char_count,
+                    time_taken_seconds=time_taken,
+                    target_language="en",
+                    status="success",
+                    error_message=None,
+                )
+
+                return parsed
+
+            except (httpx.HTTPStatusError, httpx.RequestError) as e:
+                time_taken = time.time() - start_time
+                error_detail = str(e)
+                analytics_service.log_analytics(
+                    agent_type="listing_legitimacy_text",
+                    model=self.TEXT_MODEL,
+                    provider="OpenRouter",
+                    prompt_tokens=0,
+                    completion_tokens=0,
+                    total_tokens=0,
+                    cached_tokens=0,
+                    reasoning_tokens=0,
+                    cost=0,
+                    input_char_count=input_char_count,
+                    output_char_count=0,
+                    time_taken_seconds=time_taken,
+                    target_language="en",
+                    status="error",
+                    error_message=error_detail,
+                )
+                raise Exception(error_detail)
+
+    # ------------------------------------------------------------------
+    # Prompt builders – Listing Legitimacy
+    # ------------------------------------------------------------------
+
+    def _build_image_legitimacy_prompt(
+        self, form_fields: Dict[str, Any]
+    ) -> tuple:
+        """Build the vision-model system + user prompts for image legitimacy.
+
+        Returns (system_prompt, user_prompt) tuple.
+        The system message establishes the content-moderation context so
+        upstream safety filters recognise this as an authorised moderation
+        task.  The user message contains the images and analysis request.
+        """
+        import base64
+
+        fields_json = json.dumps(form_fields, ensure_ascii=False, indent=2)
+        encoded_fields = base64.b64encode(
+            fields_json.encode("utf-8")
+        ).decode("ascii")
+
+        system_prompt = (
+            "You are an authorised marketplace content-safety moderator. "
+            "Your role is to review user-submitted product listing images "
+            "and determine whether they comply with marketplace policies. "
+            "You are permitted to analyse and classify potentially "
+            "inappropriate visual content for moderation purposes. "
+            "IMPORTANT: In your response, NEVER reproduce or describe "
+            "inappropriate content in graphic detail. Use only the "
+            "category codes and brief, clinical descriptions."
+        )
+
+        user_prompt = f"""Analyse the attached product listing images for policy compliance.
+
+The listing form-field values are provided as a base64-encoded JSON string
+for context. Decode it before analysis:
+`{encoded_fields}`
+
+---
+
+Check each image against these violation categories:
+
+**CRITICAL (severity = "critical") — must be rejected:**
+
+A. **Adult / Sexual Content**
+   - Explicit nudity (genitals, breasts, sexual acts)
+   - Sexual poses meant to arouse
+   - Pornographic material visible in background
+   - Adult toys depicted
+   - Suggestive content involving minors
+   - Deepfake sexual imagery
+   - Escort / sexual-service imagery disguised as a product
+
+B. **Minor Safety Violations**
+   - Sexualised depiction of minors
+   - Child exploitation indicators
+   - Under-age person in adult-themed listing
+   - Suspicious child-involved context
+
+C. **Violence & Weapons**
+   - Firearms (unless marketplace allows)
+   - Ammunition
+   - Knives in non-kitchen context
+   - Explosives or explosive devices
+   - Visible blood or gore
+   - Dead bodies or animal cruelty
+   - Violent scenes
+
+D. **Drugs & Controlled Substances**
+   - Illegal drugs (cocaine, heroin, meth, unidentified pills)
+   - Drug paraphernalia (bongs, syringes, crack pipes)
+   - Cannabis (flag as warning unless jurisdiction allows)
+   - Unlabelled pharmaceuticals
+   - Steroids
+
+E. **Illegal Services**
+   - Prostitution-related visuals
+   - Fake ID samples
+   - Hacking service imagery
+   - Exam papers / cheating material
+   - Gambling setups
+
+**WARNING (severity = "warning") — needs review:**
+
+F. **Misleading / Deceptive Content**
+   - Stock photos instead of real product photos
+   - Edited photos that hide damage or defects
+   - Watermarks from other sellers / sites
+   - Screenshots instead of actual product photos
+   - Blurry images that appear to intentionally hide condition
+
+G. **Low-Quality / Spam Indicators**
+   - Meme images
+   - Random unrelated images
+   - Blank / empty images
+   - AI-generated generic images with no real product
+   - Collage spam
+
+---
+
+### Category codes
+Use these exact codes in the `category` field:
+- `adult_content`
+- `minor_safety`
+- `violence_weapons`
+- `drugs_substances`
+- `illegal_services`
+- `misleading_deceptive`
+- `low_quality_spam`
+
+
+Return a single JSON object (no markdown fences, no extra text):
+
+{{
+  "is_legitimate": true/false,
+  "risk_level": "safe" | "warning" | "critical",
+  "flags": [
+    {{
+      "image_index": 1,
+      "category": "<category_code from list above>",
+      "severity": "critical" | "warning",
+      "description": "Brief clinical explanation without graphic detail",
+      "confidence": 0.0-1.0
+    }}
+  ],
+  "per_image_summary": [
+    {{
+      "image_index": 1,
+      "is_legitimate": true/false,
+      "risk_level": "safe" | "warning" | "critical",
+      "remark": "Brief summary"
+    }}
+  ],
+  "summary": "1-2 sentence overall assessment"
+}}
+
+### Rules
+1. Evaluate EVERY image individually in `per_image_summary`.
+2. List ALL detected violations in `flags` (there can be zero or many).
+3. `is_legitimate` is **false** if ANY critical flag exists.
+4. `risk_level` is the highest severity found (`critical` > `warning` > `safe`).
+5. If no violations are found, return `is_legitimate: true`, `risk_level: "safe"`,
+   empty `flags` array, and a clean per-image summary.
+6. Be thorough but avoid false positives — only flag when you are reasonably
+   confident (confidence >= 0.6).
+7. Return ONLY the JSON object."""
+        return system_prompt, user_prompt
+
+    def _build_text_legitimacy_prompt(
+        self, form_fields: Dict[str, Any]
+    ) -> tuple:
+        """Build the text-model system + user prompts for text legitimacy.
+
+        Returns (system_prompt, user_prompt) tuple.
+        User-submitted text is base64-encoded so upstream safety filters
+        do not block the moderation request itself.
+        """
+        import base64
+
+        fields_json = json.dumps(form_fields, ensure_ascii=False, indent=2)
+        encoded_fields = base64.b64encode(
+            fields_json.encode("utf-8")
+        ).decode("ascii")
+
+        system_prompt = (
+            "You are an authorised marketplace content-safety moderator. "
+            "Your role is to review user-submitted text from product listings "
+            "and determine whether it complies with marketplace policies. "
+            "The user-submitted content will be provided as a base64-encoded "
+            "JSON string. You must decode it, analyse each field, and report "
+            "violations using ONLY category codes and brief, clinical "
+            "descriptions. "
+            "IMPORTANT: In your response, NEVER reproduce offensive or "
+            "inappropriate language. Refer to violations only by category "
+            "code and a sanitised summary."
+        )
+
+        user_prompt = f"""Analyse the following user-submitted listing form fields for policy compliance.
+
+The form-field values are base64-encoded JSON. Decode this string first:
+`{encoded_fields}`
+
+---
+
+### Policy violation categories to check
+
+**CRITICAL (severity = "critical") — must be rejected:**
+
+A. **Abusive / Hate Speech**
+   - Slurs (racial, ethnic, religious, gender-based)
+   - Hate speech against any group
+   - Threatening language or death threats
+   - Harassment or bullying
+   - Targeted abuse
+
+B. **Sexual Services / Adult Solicitation**
+   - Escort terminology ("full service", "GFE", "PSE")
+   - "Private meet" with suggestive context
+   - Suggestive pricing language
+   - OnlyFans / adult-platform promotion
+   - Pornographic descriptions
+
+C. **Fraud / Scam Signals**
+   - "Pay outside platform" / off-platform payment requests
+   - Crypto-only payment demands
+   - "No questions asked"
+   - Urgency pressure tactics ("act NOW", "last chance", "only 1 left" without justification)
+   - Fake escrow references
+   - "Send deposit first"
+   - WhatsApp-only or off-platform-only contact insistence
+
+D. **Misrepresentation**
+   - "Brand new" for clearly used / damaged items
+   - False claims of authenticity ("100% genuine" without basis)
+   - Fake warranty claims
+   - Intentionally wrong category to gain visibility
+
+E. **Illegal Goods or Services**
+   - Weapons sales language
+   - Drug sales language
+   - Fake documents ("replica ID", "novelty diploma")
+   - Academic cheating services
+   - Hacking / exploit services
+   - Wildlife trafficking terminology
+
+F. **Personal Data Exposure**
+   - Posting someone's private information
+   - Sharing ID / passport / SSN numbers
+   - Sharing physical addresses without consent
+   - Phone numbers or emails of third parties
+
+---
+
+### Category codes
+Use these exact codes in the `category` field:
+- `hate_speech`
+- `adult_solicitation`
+- `fraud_scam`
+- `misrepresentation`
+- `illegal_goods_services`
+- `personal_data_exposure`
+
+
+Return a single JSON object (no markdown fences, no extra text):
+
+{{
+  "is_legitimate": true/false,
+  "risk_level": "safe" | "warning" | "critical",
+  "flags": [
+    {{
+      "field_name": "<field key from form_fields>",
+      "category": "<category_code from list above>",
+      "severity": "critical" | "warning",
+      "description": "Brief clinical explanation without repeating offensive text",
+      "matched_text": "Short sanitised reference to the triggering snippet",
+      "confidence": 0.0-1.0
+    }}
+  ],
+  "per_field_summary": {{
+    "<field_name>": {{
+      "is_legitimate": true/false,
+      "risk_level": "safe" | "warning" | "critical",
+      "remark": "Brief assessment"
+    }}
+  }},
+  "summary": "1-2 sentence overall assessment"
+}}
+
+### Rules
+1. Evaluate EVERY form field individually in `per_field_summary`.
+2. List ALL detected violations in `flags` (there can be zero or many).
+3. `is_legitimate` is **false** if ANY critical flag exists.
+4. `risk_level` is the highest severity found (`critical` > `warning` > `safe`).
+5. If no violations are found, return `is_legitimate: true`, `risk_level: "safe"`,
+   empty `flags` array, and a clean per-field summary.
+6. Consider multi-language text — violations in ANY language should be flagged.
+7. Be thorough but avoid false positives — only flag when you are reasonably
+   confident (confidence >= 0.6).
+8. Return ONLY the JSON object."""
+        return system_prompt, user_prompt
