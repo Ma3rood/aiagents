@@ -3,6 +3,11 @@ import json
 import re
 import time
 from typing import Dict, Any, Optional, List
+
+try:
+    from json_repair import loads as json_repair_loads  # type: ignore[import-untyped]
+except ImportError:
+    json_repair_loads = None  # type: ignore[misc, assignment]
 from app.core.config import settings
 from app.core.logging_config import get_logger
 from app.core.analytics import get_analytics_service
@@ -12,10 +17,20 @@ logger = get_logger(__name__)
 
 def _fix_trailing_comma_json(s: str) -> str:
     """Fix common LLM JSON issues: trailing commas, missing commas between array elements."""
-    s = re.sub(r",\s*]", "]", s)
-    s = re.sub(r",\s*}", "}", s)
+    # Remove trailing commas before ] or } (repeat to handle nested structures)
+    for _ in range(10):
+        prev = s
+        s = re.sub(r",\s*]", "]", s)
+        s = re.sub(r",\s*}", "}", s)
+        if s == prev:
+            break
+    # Add missing commas between adjacent objects/arrays
     s = re.sub(r"}\s*(?:\r?\n\s*)+{", "},\n{", s)
     s = re.sub(r"}\s+{", "},{", s)
+    s = re.sub(r"]\s*(?:\r?\n\s*)+\[", "],\n[", s)
+    s = re.sub(r"]\s+\[", "],[", s)
+    # Remove multiple consecutive commas
+    s = re.sub(r",\s*,\s*", ", ", s)
     return s
 
 
@@ -2239,12 +2254,24 @@ Respond ONLY with a valid JSON object where each key is a field name:
         }
 
     def _extract_json_from_result(self, result: Dict[str, Any]) -> Dict[str, Any]:
-        """Extract and parse JSON from an OpenRouter API response."""
+        """Extract and parse JSON from an OpenRouter API response.
+
+        Handles common LLM quirks:
+        - ``<think>…</think>`` reasoning blocks emitted by Qwen-3 and similar
+        - Markdown code fences (```json … ```)
+        - Trailing commas, missing commas between array elements
+        - Extraneous text before/after the JSON object
+        """
         if "choices" not in result or len(result["choices"]) == 0:
             raise ValueError("No choices in API response")
 
         content_text = result["choices"][0]["message"]["content"]
         content_text = content_text.strip()
+
+        # Strip <think>…</think> reasoning blocks (greedy – removes all of them)
+        content_text = re.sub(
+            r"<think>[\s\S]*?</think>", "", content_text
+        ).strip()
 
         # Strip markdown fences
         if content_text.startswith("```json"):
@@ -2258,7 +2285,41 @@ Respond ONLY with a valid JSON object where each key is a field name:
         # Fix common LLM JSON issues
         content_text = _fix_trailing_comma_json(content_text)
 
-        return json.loads(content_text)
+        # First attempt – parse the cleaned text directly
+        try:
+            return json.loads(content_text)
+        except json.JSONDecodeError:
+            pass
+
+        # Fallback – locate the outermost { … } and try again
+        first_brace = content_text.find("{")
+        last_brace = content_text.rfind("}")
+        if first_brace != -1 and last_brace != -1 and last_brace > first_brace:
+            json_slice = content_text[first_brace : last_brace + 1]
+            json_slice = _fix_trailing_comma_json(json_slice)
+            try:
+                return json.loads(json_slice)
+            except json.JSONDecodeError:
+                pass
+            # Try json_repair on the slice (trailing/missing commas, etc.)
+            if json_repair_loads is not None:
+                try:
+                    return json_repair_loads(json_slice)
+                except (json.JSONDecodeError, TypeError, ValueError):
+                    pass
+
+        # Last resort – json_repair on full content
+        if json_repair_loads is not None:
+            try:
+                return json_repair_loads(content_text)
+            except (json.JSONDecodeError, TypeError, ValueError):
+                pass
+
+        # Nothing worked – raise with original content for debugging
+        raise ValueError(
+            f"Could not extract JSON from API response. "
+            f"Content (first 500 chars): {content_text[:500]}"
+        )
 
     def _fuzzy_match_motor_category(self, candidate: str) -> str:
         """Best-effort fuzzy match against MOTOR_CATEGORIES. Raises on failure."""
@@ -2555,3 +2616,286 @@ details such as color, condition, brand marks, accessories, and overall appeal.
 12. Format with short paragraphs or bullet points for easy mobile reading.
 
 Now write the listing description:"""
+
+    # ------------------------------------------------------------------
+    # Listing Verification – Images vs Form Fields
+    # ------------------------------------------------------------------
+
+    async def verify_listing(
+        self,
+        image_urls: List[str],
+        form_fields: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """
+        Compare product images against listing form field values and return
+        a structured verification report.
+
+        For **each image** the report includes:
+          - ``matches_listing`` (bool): whether the image matches the
+            listing details overall.
+          - ``resemblance_score`` (float 0-1): how closely the image
+            resembles the described listing.
+
+        For **each form field** the report includes:
+          - ``matches_images`` (bool): whether the field value is
+            consistent with what the images show.
+          - ``resemblance_score`` (float 0-1): how closely the field
+            value resembles the visual evidence.
+          - ``remark`` (str): brief explanation for the score.
+
+        Plus an ``overall_match`` bool and ``overall_score`` float.
+
+        Args:
+            image_urls: Product image URLs.
+            form_fields: Listing form field key-value pairs.
+
+        Returns:
+            Parsed JSON dict with the verification report.
+        """
+        start_time = time.time()
+        logger.info(
+            f"Verifying listing – images={len(image_urls)}, "
+            f"fields={len(form_fields)}"
+        )
+
+        prompt = self._build_listing_verification_prompt(form_fields)
+        input_char_count = len(prompt) + len(
+            json.dumps(form_fields, ensure_ascii=False)
+        )
+
+        analytics_service = get_analytics_service()
+        status = "success"
+        error_message = None
+        output_char_count = 0
+        prompt_tokens = 0
+        completion_tokens = 0
+        total_tokens = 0
+        cached_tokens = 0
+        reasoning_tokens = 0
+        cost = 0.0
+
+        # Build message content – text prompt + images
+        content: List[Dict[str, Any]] = [{"type": "text", "text": prompt}]
+        for url in image_urls:
+            content.append({
+                "type": "image_url",
+                "image_url": {"url": url},
+            })
+
+        messages = [{"role": "user", "content": content}]
+
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+            "HTTP-Referer": "https://github.com/your-repo",
+            "X-Title": "Ma3rood AI Agents Listing Verification",
+        }
+
+        payload = {
+            "model": self.MODEL,
+            "messages": messages,
+            "temperature": 0.2,  # Low temperature for factual comparison
+            "max_tokens": 4000,
+            "usage": {"include": True},
+        }
+
+        async with httpx.AsyncClient(timeout=90.0) as client:
+            try:
+                logger.debug("Sending listing-verification request")
+                response = await client.post(
+                    self.base_url, headers=headers, json=payload
+                )
+                response.raise_for_status()
+
+                result = response.json()
+                logger.debug("Received listing-verification response")
+
+                # Token usage
+                if "usage" in result:
+                    usage = result["usage"]
+                    prompt_tokens = usage.get("prompt_tokens", 0)
+                    completion_tokens = usage.get("completion_tokens", 0)
+                    total_tokens = usage.get("total_tokens", 0)
+                    cost = usage.get("cost", 0)
+                    prompt_details = usage.get("prompt_tokens_details", {})
+                    completion_details = usage.get(
+                        "completion_tokens_details", {}
+                    )
+                    cached_tokens = prompt_details.get("cached_tokens", 0)
+                    reasoning_tokens = completion_details.get(
+                        "reasoning_tokens", 0
+                    )
+
+                parsed = self._extract_json_from_result(result)
+                output_char_count = len(
+                    json.dumps(parsed, ensure_ascii=False)
+                )
+
+                logger.info(
+                    f"Listing verification completed – "
+                    f"overall_match={parsed.get('overall_match')}, "
+                    f"overall_score={parsed.get('overall_score')}"
+                )
+
+                # Analytics
+                time_taken_seconds = time.time() - start_time
+                analytics_service.log_analytics(
+                    agent_type="listing_verification",
+                    model=self.MODEL,
+                    provider="OpenRouter",
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
+                    total_tokens=total_tokens,
+                    cached_tokens=cached_tokens,
+                    reasoning_tokens=reasoning_tokens,
+                    cost=cost,
+                    input_char_count=input_char_count,
+                    output_char_count=output_char_count,
+                    time_taken_seconds=time_taken_seconds,
+                    target_language="en",
+                    status=status,
+                    error_message=error_message,
+                )
+
+                return parsed
+
+            except httpx.HTTPStatusError as e:
+                error_detail = f"OpenRouter API error: {e.response.status_code}"
+                logger.error(
+                    f"HTTP error (listing_verification) – "
+                    f"status={e.response.status_code}"
+                )
+                if e.response.text:
+                    try:
+                        error_data = e.response.json()
+                        error_detail = error_data.get("error", {}).get(
+                            "message", error_detail
+                        )
+                    except Exception:
+                        error_detail = f"{error_detail} – {e.response.text}"
+
+                time_taken_seconds = time.time() - start_time
+                analytics_service.log_analytics(
+                    agent_type="listing_verification",
+                    model=self.MODEL,
+                    provider="OpenRouter",
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
+                    total_tokens=total_tokens,
+                    cached_tokens=cached_tokens,
+                    reasoning_tokens=reasoning_tokens,
+                    cost=cost,
+                    input_char_count=input_char_count,
+                    output_char_count=output_char_count,
+                    time_taken_seconds=time_taken_seconds,
+                    target_language="en",
+                    status="error",
+                    error_message=error_detail,
+                )
+                raise Exception(error_detail)
+
+            except httpx.RequestError as e:
+                error_detail = f"Request error: {str(e)}"
+                logger.error(
+                    f"Request error (listing_verification): {e}",
+                    exc_info=True,
+                )
+                time_taken_seconds = time.time() - start_time
+                analytics_service.log_analytics(
+                    agent_type="listing_verification",
+                    model=self.MODEL,
+                    provider="OpenRouter",
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
+                    total_tokens=total_tokens,
+                    cached_tokens=cached_tokens,
+                    reasoning_tokens=reasoning_tokens,
+                    cost=cost,
+                    input_char_count=input_char_count,
+                    output_char_count=output_char_count,
+                    time_taken_seconds=time_taken_seconds,
+                    target_language="en",
+                    status="error",
+                    error_message=error_detail,
+                )
+                raise Exception(error_detail)
+
+    # ------------------------------------------------------------------
+    # Prompt builder – Listing Verification
+    # ------------------------------------------------------------------
+
+    def _build_listing_verification_prompt(
+        self, form_fields: Dict[str, Any]
+    ) -> str:
+        """Build the prompt for image-vs-form-field verification."""
+
+        fields_json = json.dumps(form_fields, ensure_ascii=False, indent=2)
+
+        # Build numbered image references for the prompt
+        return f"""You are an expert product-listing verification agent.
+Your task is to compare the attached product **images** against the
+**listing form field values** provided below and produce a structured
+verification report in **JSON**.
+
+**Listing form fields (JSON):**
+```json
+{fields_json}
+```
+
+**Images:** The product images are attached (numbered 1, 2, … in the order
+they appear).
+
+---
+
+### What you must produce
+
+Return a single JSON object (no markdown fences, no extra text) with the
+following structure:
+
+```
+{{
+  "image_results": [
+    {{
+      "image_index": 1,
+      "matches_listing": true/false,
+      "resemblance_score": 0.0-1.0,
+      "remark": "brief explanation"
+    }}
+  ],
+  "field_results": {{
+    "<field_name>": {{
+      "field_value": "<the value from form_fields>",
+      "matches_images": true/false,
+      "resemblance_score": 0.0-1.0,
+      "remark": "brief explanation"
+    }}
+  }},
+  "overall_match": true/false,
+  "overall_score": 0.0-1.0,
+  "summary": "1-2 sentence overall assessment"
+}}
+```
+
+### Scoring guidelines
+
+| Score range | Meaning |
+|-------------|---------|
+| 0.9 – 1.0  | Perfect / near-perfect match — visually confirmed |
+| 0.7 – 0.89 | Good match — minor discrepancies or details not visible |
+| 0.5 – 0.69 | Partial match — some fields align, some don't |
+| 0.3 – 0.49 | Weak match — significant mismatches |
+| 0.0 – 0.29 | No match — images contradict the form values |
+
+### Rules
+1. Evaluate EVERY image individually in `image_results`.
+2. Evaluate EVERY form field individually in `field_results`.
+3. For `matches_listing` (image level): true if the image is consistent with
+   the majority of form field values.
+4. For `matches_images` (field level): true if the field value is consistent
+   with what the majority of images show.
+5. `overall_match` is true only when ≥ 70 % of fields match and ≥ 70 % of
+   images match.
+6. `overall_score` is the weighted average of all individual scores.
+7. Be objective and precise. If something is not visible in the images,
+   note it in the remark and give a neutral score (~0.5).
+8. Return ONLY the JSON object — no explanation outside the JSON."""
