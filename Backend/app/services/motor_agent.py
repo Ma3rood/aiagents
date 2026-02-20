@@ -43,6 +43,7 @@ class VisualFacts:
     """Output of Stage 2."""
     facts: List[str]
     raw_description: str
+    image_quality_scores: List[Dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass
@@ -73,6 +74,7 @@ class MotorFormOutput:
     category_confidence: float
     fields: Dict[str, Dict[str, Any]]
     completed_stages: List[str]
+    image_quality_scores: List[Dict[str, Any]] = field(default_factory=list)
     errors: List[str] = field(default_factory=list)
 
 
@@ -191,6 +193,7 @@ class MotorAgentService:
             raw_field_values=raw_field_values,
             completed_stages=completed_stages,
             errors=errors,
+            image_quality_scores=visual_facts.image_quality_scores if visual_facts else [],
         )
 
         return form_output
@@ -214,6 +217,7 @@ class MotorAgentService:
         return VisualFacts(
             facts=data["facts"],
             raw_description=data["raw_description"],
+            image_quality_scores=data.get("image_quality_scores", []),
         )
 
     async def _stage_1_2_combined(
@@ -229,6 +233,7 @@ class MotorAgentService:
         vis_facts = VisualFacts(
             facts=data["facts"],
             raw_description=data["raw_description"],
+            image_quality_scores=data.get("image_quality_scores", []),
         )
         return cat_result, vis_facts
 
@@ -356,6 +361,7 @@ class MotorAgentService:
         raw_field_values: Dict[str, Any],
         completed_stages: List[str],
         errors: List[str],
+        image_quality_scores: List[Dict[str, Any]] = None,
     ) -> MotorFormOutput:
         """
         Assemble the final JSON-serialisable output.
@@ -394,6 +400,7 @@ class MotorAgentService:
         return MotorFormOutput(
             status=status,
             category=category_result.category,
+            image_quality_scores=image_quality_scores or [],
             category_confidence=category_result.confidence,
             fields=fields_output,
             completed_stages=completed_stages,

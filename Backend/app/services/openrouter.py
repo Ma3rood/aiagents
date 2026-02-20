@@ -422,6 +422,17 @@ CRITICAL INSTRUCTIONS:
 10. Be accurate and only extract information that is clearly visible in the images
 11. Use information from all images to build a complete product description
 
+IMAGE QUALITY SCORES (always include, per image):
+For EACH image provided, assess its quality individually. Return an array of objects, one per image (in the same order as the images are provided), each containing:
+- image_index: 1-based index of the image
+- score: A float between 0.0 and 1.0 indicating how well the product is understandable and identifiable from that specific image
+  * 0.9 – 1.0: Product is perfectly clear, well-lit, in focus, and all important details are visible
+  * 0.7 – 0.89: Product is mostly clear with minor issues (slight blur, partial obstruction, suboptimal lighting)
+  * 0.5 – 0.69: Product is somewhat identifiable but significant details are hard to see
+  * 0.3 – 0.49: Product is difficult to identify; poor lighting, heavy blur, or mostly obscured
+  * 0.0 – 0.29: Product is nearly unidentifiable from the image
+- remark: A brief explanation (1-2 sentences) justifying the score. Mention specific observations such as lighting, focus, angle, obstructions, or background clutter.
+
 Response format:
 {{
   "title": "Product Title",
@@ -429,6 +440,9 @@ Response format:
   "price": 99.99,
   "category": "Electronics",
   "condition": "Brand New or Unused",
+  "image_quality_scores": [
+    {{ "image_index": 1, "score": 0.85, "remark": "Well-lit and in focus, product clearly visible." }}
+  ],
   "location": "City, Country",
   "tags": ["tag1", "tag2"],
   "quantity": 1,
@@ -450,6 +464,9 @@ Example for a smartphone:
   "price": 999.99,
   "category": "Electronics",
   "condition": "Brand New or Unused",
+  "image_quality_scores": [
+    {{ "image_index": 1, "score": 0.92, "remark": "Product is photographed on a clean surface with excellent lighting and sharp focus." }}
+  ],
   "location": "New York, USA",
   "tags": ["smartphone", "apple", "iphone"],
   "quantity": 1,
@@ -471,6 +488,9 @@ Example for clothing:
   "price": 129.99,
   "category": "Clothing",
   "condition": "Brand New or Unused",
+  "image_quality_scores": [
+    {{ "image_index": 1, "score": 0.78, "remark": "Good overall clarity but slightly washed-out lighting makes it hard to distinguish exact color tones." }}
+  ],
   "location": "Los Angeles, USA",
   "tags": ["shoes", "running", "nike"],
   "quantity": 1,
@@ -1540,12 +1560,27 @@ CRITICAL INSTRUCTIONS:
 10. Be accurate and only extract information that is clearly visible in the images
 11. Use information from all images to build a complete product description
 
+IMAGE QUALITY SCORES (per image):
+For EACH image provided, assess its quality individually. Return an array of objects, one per image (in the same order as the images are provided), each containing:
+- image_index: 1-based index of the image
+- score: A float between 0.0 and 1.0 indicating how well the product is understandable and identifiable from that specific image
+  * 0.9 – 1.0: Product is perfectly clear, well-lit, in focus, and all important details are visible
+  * 0.7 – 0.89: Product is mostly clear with minor issues (slight blur, partial obstruction, suboptimal lighting)
+  * 0.5 – 0.69: Product is somewhat identifiable but significant details are hard to see
+  * 0.3 – 0.49: Product is difficult to identify; poor lighting, heavy blur, or mostly obscured
+  * 0.0 – 0.29: Product is nearly unidentifiable from the image
+- remark: A brief explanation (1-2 sentences) justifying the score. Mention specific observations such as lighting, focus, angle, obstructions, or background clutter.
+
 Response format:
 {{
   "title": "Product Title",
   "description": "Detailed description generated from the images...",
   "category": {{ "id_path": "selected_id_path", "category_path": "Selected > Category > Path" }},
   "condition": "Brand New or Unused",
+  "image_quality_scores": [
+    {{ "image_index": 1, "score": 0.92, "remark": "Well-lit, sharp focus, product clearly visible on a clean background." }},
+    {{ "image_index": 2, "score": 0.78, "remark": "Slightly angled view with minor shadow, but product details are still identifiable." }}
+  ],
   "attributes": {{
     "Brand": "Brand Name",
     "Model": "Model XYZ",
@@ -1559,6 +1594,10 @@ Example for a smartphone (category selected: Mobile phones > Smartphones):
   "description": "Latest iPhone with advanced features...",
   "category": {{ "id_path": "3638 > 3640", "category_path": "Mobile phones > Smartphones" }},
   "condition": "Brand New or Unused",
+  "image_quality_scores": [
+    {{ "image_index": 1, "score": 0.95, "remark": "Front view is perfectly clear with excellent lighting. Model markings and color clearly visible." }},
+    {{ "image_index": 2, "score": 0.88, "remark": "Back view is well-lit but slight reflection on the camera module." }}
+  ],
   "attributes": {{
     "Brand": "Apple",
     "Model": "iPhone 15 Pro",
@@ -1576,6 +1615,9 @@ Example for clothing:
   "description": "Comfortable running shoes...",
   "category": {{ "id_path": "1482 > 1500", "category_path": "Clothing & Fashion > Shoes" }},
   "condition": "Brand New or Unused",
+  "image_quality_scores": [
+    {{ "image_index": 1, "score": 0.78, "remark": "Good overall clarity but slightly washed-out lighting makes it hard to distinguish exact color tones." }}
+  ],
   "attributes": {{
     "Brand": "Nike",
     "Color": "Black/White",
@@ -1882,6 +1924,7 @@ Do not include any explanations or markdown formatting outside the JSON."""
                 return {
                     "facts": facts,
                     "raw_description": parsed.get("raw_description", ""),
+                    "image_quality_scores": parsed.get("image_quality_scores", []),
                 }
             except Exception as e:
                 time_taken = time.time() - start_time
@@ -1955,6 +1998,7 @@ Do not include any explanations or markdown formatting outside the JSON."""
                     "reasoning": parsed.get("reasoning", ""),
                     "facts": facts,
                     "raw_description": parsed.get("raw_description", ""),
+                    "image_quality_scores": parsed.get("image_quality_scores", []),
                 }
             except Exception as e:
                 time_taken = time.time() - start_time
@@ -2095,6 +2139,14 @@ RULES:
 5. Be specific. For example, say "Toyota badge visible on grille" rather than just "it's a Toyota".
 6. Combine information from all images if multiple are provided.
 
+Also assess the quality of EACH image individually — how well the product/vehicle is understandable and identifiable from that specific image:
+- 0.9 – 1.0: Perfectly clear, well-lit, in focus, all important details visible
+- 0.7 – 0.89: Mostly clear with minor issues
+- 0.5 – 0.69: Somewhat identifiable but significant details hard to see
+- 0.3 – 0.49: Difficult to identify; poor lighting, heavy blur, or mostly obscured
+- 0.0 – 0.29: Nearly unidentifiable
+Provide a brief 1-2 sentence remark per image justifying the score (mention lighting, focus, angle, obstructions, etc.).
+
 Respond ONLY with a valid JSON object:
 
 {
@@ -2104,7 +2156,11 @@ Respond ONLY with a valid JSON object:
     {"text": "Honda City typically comes with 1.2L petrol engine", "type": "inferred"},
     {"text": "Standard seating capacity for this sedan is 5", "type": "inferred"}
   ],
-  "raw_description": "A cohesive 2-3 sentence summary combining observations and reasonable inferences."
+  "raw_description": "A cohesive 2-3 sentence summary combining observations and reasonable inferences.",
+  "image_quality_scores": [
+    {"image_index": 1, "score": 0.90, "remark": "Vehicle exterior is clearly visible with good lighting and sharp focus."},
+    {"image_index": 2, "score": 0.75, "remark": "Interior shot is slightly dark but key features are identifiable."}
+  ]
 }"""
 
     def _build_motor_combined_prompt(self) -> str:
@@ -2125,6 +2181,15 @@ Extract both direct observations and reasonable inferences about the item.
 - Do NOT infer mileage, exact price, or registration details.
 - Be specific and factual.
 
+TASK 3 - IMAGE QUALITY SCORE:
+Assess the overall image quality — how well the product/vehicle is understandable and identifiable from the provided image(s):
+- 0.9 – 1.0: Perfectly clear, well-lit, in focus, all important details visible
+- 0.7 – 0.89: Mostly clear with minor issues
+- 0.5 – 0.69: Somewhat identifiable but significant details hard to see
+- 0.3 – 0.49: Difficult to identify; poor lighting, heavy blur, or mostly obscured
+- 0.0 – 0.29: Nearly unidentifiable
+Provide a brief 1-2 sentence remark justifying the score (mention lighting, focus, angle, obstructions, etc.).
+
 Respond ONLY with a valid JSON object. No markdown, no explanations outside the JSON.
 
 {{
@@ -2135,7 +2200,9 @@ Respond ONLY with a valid JSON object. No markdown, no explanations outside the 
     {{"text": "fact 1", "type": "observed"}},
     {{"text": "fact 2", "type": "inferred"}}
   ],
-  "raw_description": "A cohesive 2-3 sentence summary combining observations and inferences."
+  "raw_description": "A cohesive 2-3 sentence summary combining observations and inferences.",
+  "image_quality_score": 0.85,
+  "image_quality_remark": "Vehicle is clearly visible with good lighting and sharp focus."
 }}"""
 
     def _build_motor_field_value_prompt(
@@ -2870,6 +2937,13 @@ following structure:
       "remark": "brief explanation"
     }}
   }},
+  "image_quality_scores": [
+    {{
+      "image_index": 1,
+      "score": 0.0-1.0,
+      "remark": "brief explanation of image quality — mention lighting, focus, angle, obstructions"
+    }}
+  ],
   "overall_match": true/false,
   "overall_score": 0.0-1.0,
   "summary": "1-2 sentence overall assessment"
@@ -2886,6 +2960,19 @@ following structure:
 | 0.3 – 0.49 | Weak match — significant mismatches |
 | 0.0 – 0.29 | No match — images contradict the form values |
 
+### Image quality scores (per image)
+`image_quality_scores` is an array with one entry per image. Each entry has:
+- `image_index`: 1-based index matching the image order
+- `score`: float 0.0–1.0 indicating how well the product is understandable
+  and identifiable from that specific image:
+  - 0.9 – 1.0: Perfectly clear, well-lit, in focus, all details visible
+  - 0.7 – 0.89: Mostly clear with minor issues
+  - 0.5 – 0.69: Somewhat identifiable but significant details hard to see
+  - 0.3 – 0.49: Difficult to identify; poor lighting, heavy blur, or mostly obscured
+  - 0.0 – 0.29: Nearly unidentifiable
+- `remark`: brief 1-2 sentence explanation justifying the score — mention
+  specific observations like lighting, focus, angle, or obstructions.
+
 ### Rules
 1. Evaluate EVERY image individually in `image_results`.
 2. Evaluate EVERY form field individually in `field_results`.
@@ -2898,7 +2985,9 @@ following structure:
 6. `overall_score` is the weighted average of all individual scores.
 7. Be objective and precise. If something is not visible in the images,
    note it in the remark and give a neutral score (~0.5).
-8. Return ONLY the JSON object — no explanation outside the JSON."""
+8. Each `image_quality_scores` entry should reflect the clarity and usefulness
+   of that specific image for identifying the product, independent of form field matching.
+9. Return ONLY the JSON object — no explanation outside the JSON."""
 
     # ------------------------------------------------------------------
     # Listing Legitimacy Check

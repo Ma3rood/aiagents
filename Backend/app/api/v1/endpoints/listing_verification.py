@@ -45,6 +45,13 @@ class FieldResult(BaseModel):
     remark: str
 
 
+class ImageQualityScore(BaseModel):
+    """Quality assessment for a single image."""
+    image_index: int
+    score: float
+    remark: str
+
+
 class ListingVerificationResponse(BaseModel):
     """Response body containing the full verification report."""
     status: str
@@ -52,9 +59,29 @@ class ListingVerificationResponse(BaseModel):
     field_count: int
     image_results: List[ImageResult]
     field_results: Dict[str, FieldResult]
+    image_quality_scores: List[ImageQualityScore]
     overall_match: bool
     overall_score: float
     summary: str
+
+
+def _normalize_field_results(
+    raw: Dict[str, Any],
+) -> Dict[str, FieldResult]:
+    """Build field_results from API response, tolerating list or dict per field."""
+    out: Dict[str, FieldResult] = {}
+    for k, v in raw.items():
+        if isinstance(v, dict):
+            out[k] = FieldResult(**v)
+        elif isinstance(v, list) and v and isinstance(v[0], dict):
+            out[k] = FieldResult(**v[0])
+        else:
+            logger.warning(
+                "Listing verification: invalid field_result for %s (type=%s), skipping",
+                k,
+                type(v).__name__,
+            )
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -93,6 +120,7 @@ async def verify_listing(request: ListingVerificationRequest):
     - ``image_count`` / ``field_count``: counts processed
     - ``image_results``: list of per-image verdicts
     - ``field_results``: dict of per-field verdicts
+    - ``image_quality_scores``: per-image quality assessments (score 0.0-1.0 and remark) indicating how well the product is understandable and identifiable from each image
     - ``overall_match``: True when >= 70% images AND fields match
     - ``overall_score``: weighted average score (0-1)
     - ``summary``: brief human-readable assessment
@@ -137,10 +165,13 @@ async def verify_listing(request: ListingVerificationRequest):
             image_results=[
                 ImageResult(**img) for img in report.get("image_results", [])
             ],
-            field_results={
-                k: FieldResult(**v)
-                for k, v in report.get("field_results", {}).items()
-            },
+            field_results=_normalize_field_results(
+                report.get("field_results", {})
+            ),
+            image_quality_scores=[
+                ImageQualityScore(**entry)
+                for entry in report.get("image_quality_scores", [])
+            ],
             overall_match=report.get("overall_match", False),
             overall_score=report.get("overall_score", 0.0),
             summary=report.get("summary", ""),

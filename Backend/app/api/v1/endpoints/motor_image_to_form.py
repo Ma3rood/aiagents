@@ -37,6 +37,13 @@ class FieldOutput(BaseModel):
     required: Optional[bool] = None
 
 
+class ImageQualityScore(BaseModel):
+    """Quality assessment for a single image."""
+    image_index: int
+    score: float
+    remark: str
+
+
 class MotorImageToFormResponse(BaseModel):
     status: str
     category: str
@@ -44,6 +51,7 @@ class MotorImageToFormResponse(BaseModel):
     fields: Dict[str, FieldOutput]
     image_urls: List[str]
     image_count: int
+    image_quality_scores: List[ImageQualityScore] = []
     completed_stages: List[str]
     errors: List[str] = []
 
@@ -120,6 +128,9 @@ async def motor_image_to_form(request: MotorImageToFormRequest):
             },
             image_urls=image_urls,
             image_count=len(image_urls),
+            image_quality_scores=[
+                ImageQualityScore(**entry) for entry in result.image_quality_scores
+            ],
             completed_stages=result.completed_stages,
             errors=result.errors,
         )

@@ -16,11 +16,19 @@ class ImageToFormRequest(BaseModel):
     use_semantic_search: bool = True  # Flag to enable/disable semantic category search
 
 
+class ImageQualityScore(BaseModel):
+    """Quality assessment for a single image."""
+    image_index: int
+    score: float
+    remark: str
+
+
 class ImageToFormResponse(BaseModel):
     status: str
     image_urls: List[str]
     image_count: int
     language: str
+    image_quality_scores: List[ImageQualityScore]
     form_data: Dict[str, Any]
 
 
@@ -56,6 +64,7 @@ async def image_to_form_agent(request: ImageToFormRequest):
     - `image_urls`: List of processed image URLs
     - `image_count`: Number of images processed
     - `language`: Language used for extraction
+    - `image_quality_scores`: Per-image quality assessments (score 0.0-1.0 and remark) indicating how well the product is understandable and identifiable from each image
     - `form_data`: Extracted product information including:
         - `description`: Product description in target language
         - `category`: Selected category with id_path and category_path
@@ -103,9 +112,12 @@ async def image_to_form_agent(request: ImageToFormRequest):
                 language=request.selected_language
             )
         
+        image_quality_scores = form_data.pop("image_quality_scores", []) if isinstance(form_data, dict) else []
+        
         logger.info(
             f"Image to form extraction completed successfully - "
-            f"Language: {request.selected_language}, Images processed: {len(image_urls)}"
+            f"Language: {request.selected_language}, Images processed: {len(image_urls)}, "
+            f"Image quality scores count: {len(image_quality_scores)}"
         )
         logger.debug(f"Extracted form data keys: {list(form_data.keys()) if isinstance(form_data, dict) else 'N/A'}")
         
@@ -114,6 +126,7 @@ async def image_to_form_agent(request: ImageToFormRequest):
             "image_urls": image_urls,
             "image_count": len(image_urls),
             "language": request.selected_language,
+            "image_quality_scores": image_quality_scores,
             "form_data": form_data
         }
     except HTTPException:
@@ -239,11 +252,14 @@ async def image_to_form_legacy(request: ImageToFormRequest):
             language=request.selected_language
         )
         
+        image_quality_scores = form_data.pop("image_quality_scores", []) if isinstance(form_data, dict) else []
+        
         return {
             "status": "success",
             "image_urls": image_urls,
             "image_count": len(image_urls),
             "language": request.selected_language,
+            "image_quality_scores": image_quality_scores,
             "form_data": form_data
         }
     except HTTPException:
