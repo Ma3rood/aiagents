@@ -1,0 +1,123 @@
+category_name,field_name,required,depends_on
+Cars,Title,true,
+Cars,Description,true,
+Cars,Condition,true,
+Cars,Make,true,
+Cars,Model,true,Make
+Cars,Year,false,Model
+Cars,Color,false,
+Cars,Odometer,false,
+Cars,Fuel Type,false,
+Cars,Transmission,false,
+Cars,Body Style,false,
+Motorbikes,Title,true,
+Motorbikes,Description,true,
+Motorbikes,Condition,true,
+Motorbikes,Make,true,
+Motorbikes,Model,true,Make
+Motorbikes,Year,false,Model
+Motorbikes,Color,false,
+Motorbikes,Odometer,false,
+Motorbikes,Fuel Type,false,
+Motorbikes,Transmission,false,
+Motorbikes,Body Style,false,
+Boats & marine,Title,true,
+Boats & marine,Description,true,
+Boats & marine,Condition,true,
+Boats & marine,Make,true,
+Boats & marine,Model,true,Make
+Boats & marine,Year,false,Model
+Boats & marine,Color,false,
+Boats & marine,Odometer,false,
+Boats & marine,Fuel Type,false,
+Boats & marine,Transmission,false,
+Boats & marine,Body Style,false,
+Car parts & accessories,Title,true,
+Car parts & accessories,Description,true,
+Car parts & accessories,Make,true,
+Car parts & accessories,Part,true,
+Car parts & accessories,Compatible Model,false,Make
+Car parts & accessories,Year,false,Compatible Model
+Car parts & accessories,Condition,true,
+Car parts & accessories,Color,false,
+Aircraft,Title,true,
+Aircraft,Description,true,
+Aircraft,Condition,true,
+Aircraft,Make,true,
+Aircraft,Model,true,Make
+Aircraft,Year,false,Model
+Aircraft,Color,false,
+Aircraft,Odometer,false,
+Buses,Title,true,
+Buses,Description,true,
+Buses,Condition,true,
+Buses,Make,true,
+Buses,Model,true,Make
+Buses,Year,false,Model
+Buses,Color,false,
+Buses,Odometer,false,
+Buses,Transmission,false,
+Car stereos,Title,true,
+Car stereos,Description,true,
+Car stereos,Make,true,
+Car stereos,Part,true,
+Car stereos,Compatible Model,false,Make
+Car stereos,Year,false,Compatible Model
+Car stereos,Condition,true,
+Car stereos,Color,false,
+Caravans & motorhomes,Title,true,
+Caravans & motorhomes,Description,true,
+Caravans & motorhomes,Condition,true,
+Caravans & motorhomes,Make,true,
+Caravans & motorhomes,Model,true,Make
+Caravans & motorhomes,Year,false,Model
+Caravans & motorhomes,Color,false,
+Caravans & motorhomes,Odometer,false,
+Caravans & motorhomes,Fuel Type,false,
+Caravans & motorhomes,Transmission,false,
+Caravans & motorhomes,Body Style,false,
+Horse floats,Title,true,
+Horse floats,Description,true,
+Horse floats,Condition,true,
+Horse floats,Make,true,
+Horse floats,Model,true,Make
+Horse floats,Year,false,Model
+Horse floats,Color,false,
+Horse floats,Odometer,false,
+Horse floats,Transmission,false,
+Specialist cars,Title,true,
+Specialist cars,Description,true,
+Specialist cars,Condition,true,
+Specialist cars,Make,true,
+Specialist cars,Model,true,Make
+Specialist cars,Year,false,Model
+Specialist cars,Color,false,
+Specialist cars,Odometer,false,
+Specialist cars,Transmission,false,
+Trailers,Title,true,
+Trailers,Description,true,
+Trailers,Condition,true,
+Trailers,Make,true,
+Trailers,Model,true,Make
+Trailers,Year,false,Model
+Trailers,Color,false,
+Trailers,Odometer,false,
+Trailers,Transmission,false,
+Trucks,Title,true,
+Trucks,Description,true,
+Trucks,Condition,true,
+Trucks,Make,true,
+Trucks,Model,true,Make
+Trucks,Year,false,Model
+Trucks,Color,false,
+Trucks,Odometer,false,
+Trucks,Transmission,false,
+Wrecked cars,Title,true,
+Wrecked cars,Description,true,
+Wrecked cars,Condition,true,
+Wrecked cars,Make,true,
+Wrecked cars,Model,true,Make
+Wrecked cars,Year,false,Model
+Wrecked cars,Color,false,
+Wrecked cars,Odometer,false,
+Wrecked cars,Transmission,false,

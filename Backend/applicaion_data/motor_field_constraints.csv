@@ -1,0 +1,35 @@
+category_name,field_name,allowed_values,source
+All,Condition,New|Used,fixed
+All,Make,,free_text
+All,Model,,free_text
+All,Year,,free_text
+All,Color,,free_text
+All,Odometer,,free_text
+All,Title,,free_text
+All,Description,,free_text
+Cars,Transmission,Automatic|Manual,fixed
+Cars,Condition,New|Used,fixed
+Cars,Fuel Type,Petrol|Diesel|Electric|Hybrid|LPG,fixed
+Cars,Body Style,Sedan|SUV|Hatchback|Crossover|Truck|Ute|Van|Coupe|Wagon|Convertible,fixed
+Motorbikes,Transmission,Automatic|Manual,fixed
+Motorbikes,Condition,New|Used,fixed
+Motorbikes,Fuel Type,Petrol|Electric,fixed
+Motorbikes,Body Style,Sport|Cruiser|Touring|Scooter|Off-Road|Cafe Racer|Chopper|Moped,fixed
+Caravans & motorhomes,Transmission,Automatic|Manual,fixed
+Caravans & motorhomes,Condition,New|Used,fixed
+Caravans & motorhomes,Fuel Type,Diesel|Petrol,fixed
+Caravans & motorhomes,Body Style,Motorhome|Campervan|Caravan|Fifth Wheeler|Pop Top,fixed
+Boats & marine,Transmission,Automatic|Manual,fixed
+Boats & marine,Condition,New|Used,fixed
+Boats & marine,Fuel Type,Petrol|Diesel,fixed
+Boats & marine,Body Style,Runabout|Cabin Cruiser|Yacht|Dinghy|Jet Ski|Fishing Boat|Houseboat,fixed
+Car parts & accessories,Make,,free_text
+Car parts & accessories,Part,,free_text
+Car parts & accessories,Compatible Model,,free_text
+Car parts & accessories,Year,,free_text
+Car parts & accessories,Condition,New|Used,fixed
+Car stereos,Make,,free_text
+Car stereos,Part,,free_text
+Car stereos,Compatible Model,,free_text
+Car stereos,Year,,free_text
+Car stereos,Condition,New|Used,fixed
