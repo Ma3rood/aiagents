@@ -14,6 +14,7 @@ class ImageToFormRequest(BaseModel):
     image_urls: List[HttpUrl]
     selected_language: str
     use_semantic_search: bool = True  # Flag to enable/disable semantic category search
+    known_defects: Optional[List[str]] = None  # Seller-provided list of known defects to incorporate in description
 
 
 class ImageQualityScore(BaseModel):
@@ -58,6 +59,7 @@ async def image_to_form_agent(request: ImageToFormRequest):
     - `image_urls`: List of image URLs (at least one required)
     - `selected_language`: Target language for extraction (e.g., "en", "ar")
     - `use_semantic_search`: Enable semantic category search (default: True)
+    - `known_defects`: Optional list of known defects (strings) to incorporate in the description; defects are communicated clearly while keeping the listing attractive
     
     **Response:**
     - `status`: Success status
@@ -103,13 +105,15 @@ async def image_to_form_agent(request: ImageToFormRequest):
             form_data = await _process_with_semantic_search(
                 openrouter_service=openrouter_service,
                 image_urls=image_urls,
-                language=request.selected_language
+                language=request.selected_language,
+                known_defects=request.known_defects,
             )
         else:
             # Fall back to legacy single-call extraction
             form_data = await openrouter_service.extract_form_fields_from_images(
                 image_urls=image_urls,
-                language=request.selected_language
+                language=request.selected_language,
+                known_defects=request.known_defects,
             )
         
         image_quality_scores = form_data.pop("image_quality_scores", []) if isinstance(form_data, dict) else []
@@ -142,7 +146,8 @@ async def image_to_form_agent(request: ImageToFormRequest):
 async def _process_with_semantic_search(
     openrouter_service: OpenRouterService,
     image_urls: List[str],
-    language: str
+    language: str,
+    known_defects: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     """
     Process images using the 3-step semantic search flow.
@@ -215,7 +220,8 @@ async def _process_with_semantic_search(
         image_urls=image_urls,
         visual_description=visual_description,
         candidate_categories=candidate_categories,
-        language=language
+        language=language,
+        known_defects=known_defects,
     )
     
     logger.info(f"Step 3 complete - Selected category: {form_data.get('category', {}).get('category_path', 'N/A')}")
@@ -249,7 +255,8 @@ async def image_to_form_legacy(request: ImageToFormRequest):
         
         form_data = await openrouter_service.extract_form_fields_from_images(
             image_urls=image_urls,
-            language=request.selected_language
+            language=request.selected_language,
+            known_defects=request.known_defects,
         )
         
         image_quality_scores = form_data.pop("image_quality_scores", []) if isinstance(form_data, dict) else []

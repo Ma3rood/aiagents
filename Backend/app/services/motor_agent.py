@@ -103,6 +103,7 @@ class MotorAgentService:
         self,
         image_urls: List[str],
         combined_vision: bool = False,
+        known_defects: Optional[List[str]] = None,
     ) -> MotorFormOutput:
         """
         Execute the full 6-stage pipeline and return a ``MotorFormOutput``.
@@ -178,6 +179,7 @@ class MotorAgentService:
                 visual_facts=visual_facts,
                 eligible_fields=eligible_fields,
                 category=category_result.category,
+                known_defects=known_defects,
             )
             completed_stages.append("stage_5_field_values")
         except Exception as exc:
@@ -271,6 +273,7 @@ class MotorAgentService:
         visual_facts: VisualFacts,
         eligible_fields: List[EligibleField],
         category: str = "",
+        known_defects: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         """
         Call VLM for field values and apply post-processing rules.
@@ -294,6 +297,7 @@ class MotorAgentService:
             raw_description=visual_facts.raw_description,
             eligible_fields=ef_dicts,
             category=category,
+            known_defects=known_defects,
         )
 
         # Post-process: validate constraints, apply threshold, enforce dependencies

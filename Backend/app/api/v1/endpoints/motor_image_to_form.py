@@ -26,6 +26,7 @@ class MotorImageToFormRequest(BaseModel):
     """Request body for the motor image-to-form endpoint."""
     image_urls: List[HttpUrl]
     combined_vision: bool = False  # True -> merge Stage 1+2 into one VLM call
+    known_defects: Optional[List[str]] = None  # Seller-provided list of known defects to incorporate in description
 
 
 class FieldOutput(BaseModel):
@@ -87,6 +88,7 @@ async def motor_image_to_form(request: MotorImageToFormRequest):
     **Request:**
     - ``image_urls``: one or more image URLs of the same vehicle/item
     - ``combined_vision``: if *true*, stages 1+2 run in a single VLM call (faster)
+    - ``known_defects``: optional list of known defects (strings) to incorporate in the description; defects are communicated clearly while keeping the listing attractive
 
     **Response:**
     - ``status``: ``"success"`` or ``"partial"`` (if a stage failed)
@@ -111,6 +113,7 @@ async def motor_image_to_form(request: MotorImageToFormRequest):
         result = await agent.run(
             image_urls=image_urls,
             combined_vision=request.combined_vision,
+            known_defects=request.known_defects,
         )
 
         logger.info(

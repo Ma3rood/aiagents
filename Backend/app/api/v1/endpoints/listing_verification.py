@@ -69,12 +69,35 @@ def _normalize_field_results(
     raw: Dict[str, Any],
 ) -> Dict[str, FieldResult]:
     """Build field_results from API response, tolerating list or dict per field."""
+    required = {"field_value", "matches_images", "resemblance_score", "remark"}
+
+    def _is_field_result_obj(d: Any) -> bool:
+        return isinstance(d, dict) and required.issubset(d.keys())
+
+    def _safe_field_result(d: Dict[str, Any]) -> Optional[FieldResult]:
+        if not _is_field_result_obj(d):
+            return None
+        try:
+            return FieldResult(**d)
+        except Exception:
+            return None
+
     out: Dict[str, FieldResult] = {}
     for k, v in raw.items():
+        cand: Optional[Dict[str, Any]] = None
         if isinstance(v, dict):
-            out[k] = FieldResult(**v)
+            cand = v
         elif isinstance(v, list) and v and isinstance(v[0], dict):
-            out[k] = FieldResult(**v[0])
+            cand = v[0]
+        if cand is not None:
+            result = _safe_field_result(cand)
+            if result is not None:
+                out[k] = result
+            else:
+                logger.warning(
+                    "Listing verification: field_result for %s missing required keys or invalid, skipping",
+                    k,
+                )
         else:
             logger.warning(
                 "Listing verification: invalid field_result for %s (type=%s), skipping",
@@ -172,9 +195,9 @@ async def verify_listing(request: ListingVerificationRequest):
                 ImageQualityScore(**entry)
                 for entry in report.get("image_quality_scores", [])
             ],
-            overall_match=report.get("overall_match", False),
-            overall_score=report.get("overall_score", 0.0),
-            summary=report.get("summary", ""),
+            overall_match=report.get("overall_match") if report.get("overall_match") is not None else False,
+            overall_score=report.get("overall_score") if report.get("overall_score") is not None else 0.0,
+            summary=report.get("summary") or "",
         )
 
     except HTTPException:

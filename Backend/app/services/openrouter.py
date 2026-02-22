@@ -78,17 +78,19 @@ class OpenRouterService:
         logger.debug(f"OpenRouterService initialized - Base URL: {self.base_url}")
     
     async def extract_form_fields_from_images(
-        self, 
-        image_urls: List[str], 
-        language: str
+        self,
+        image_urls: List[str],
+        language: str,
+        known_defects: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         """
         Extract marketplace listing form fields from multiple images of the same product using Qwen3 VL model.
-        
+
         Args:
             image_urls: List of URLs of images to analyze (all images should be of the same product)
             language: Selected language for the response
-            
+            known_defects: Optional list of seller-provided known defects to incorporate in the description
+
         Returns:
             Dictionary containing extracted form field values
         """
@@ -97,9 +99,9 @@ class OpenRouterService:
             f"Extracting form fields from images - Image count: {len(image_urls)}, "
             f"Language: {language}, Model: {self.MODEL}"
         )
-        
+
         # Construct the prompt for marketplace listing extraction
-        prompt = self._build_marketplace_prompt(language, len(image_urls))
+        prompt = self._build_marketplace_prompt(language, len(image_urls), known_defects=known_defects)
         input_char_count = len(prompt)
         logger.debug(f"Built marketplace prompt (length: {input_char_count} chars)")
         
@@ -150,7 +152,6 @@ class OpenRouterService:
             "model": self.MODEL,
             "messages": messages,
             "temperature": 0.3,  # Lower temperature for more consistent extraction
-            "max_tokens": 2000,
             "usage": {
                 "include": True  # Enable usage accounting as per OpenRouter docs
             }
@@ -348,19 +349,34 @@ class OpenRouterService:
                 )
                 raise
     
-    def _build_marketplace_prompt(self, language: str, image_count: int = 1) -> str:
-        """Build the prompt for extracting marketplace listing form fields"""
-        
+    def _build_marketplace_prompt(
+        self,
+        language: str,
+        image_count: int = 1,
+        known_defects: Optional[List[str]] = None,
+    ) -> str:
+        """Build the prompt for extracting marketplace listing form fields."""
         image_text = "these images" if image_count > 1 else "this image"
         image_instruction = f"Analyze all {image_count} images provided" if image_count > 1 else "Analyze this image"
-        
-        prompt = f"""{image_instruction} and extract all relevant information for a marketplace listing form. 
+
+        defects_section = ""
+        if known_defects and len(known_defects) > 0:
+            defects_list = "\n".join(f"- {d}" for d in known_defects)
+            defects_section = f"""
+KNOWN DEFECTS (seller-provided; MUST be incorporated in the description):
+{defects_list}
+
+When writing the description: state these defects clearly and completely so buyers are fully informed, but phrase them in a neutral, honest way that still highlights the product's value and appeal (e.g., "minor wear on X, otherwise in great condition" or "sold as-is; see notes"). The description must both communicate defects transparently and remain attractive to interested buyers.
+"""
+
+        prompt = f"""{image_instruction} and extract all relevant information for a marketplace listing form.
 All {image_text} show the same product from different angles or views. Combine information from all images to get a complete picture of the product.
+{defects_section}
 Respond ONLY with a valid JSON object in {language} language. Do not include any markdown formatting or explanations outside the JSON.
 
 REQUIRED FIELDS (always include these):
 - title: Product/item title (string, required)
-- description: Detailed, marketing-friendly description of the product/item (string, required). Make it compelling and appealing to buyers, highlight key benefits/features clearly visible in the images.
+- description: Detailed, marketing-friendly description of the product/item (string, required). Make it compelling and appealing to buyers, highlight key benefits/features clearly visible in the images. If known defects were provided above, integrate them clearly and completely into this description while keeping it attractive.
 - price: Price if visible (number, or null if not found)
 - category: Product category (string, e.g., "Electronics", "Clothing", "Furniture", "Vehicles", etc.)
 - condition: Condition of the item. Must be one of the following exact values (string, or null if not determinable):
@@ -572,7 +588,6 @@ Example for clothing:
             "model": model_to_use,
             "messages": messages,
             "temperature": 0.2,  # Lower temperature for accurate translations
-            "max_tokens": 4000,
             "usage": {
                 "include": True
             }
@@ -1079,7 +1094,6 @@ Now translate the provided fields to {target_language}:"""
             "model": self.TEXT_MODEL,
             "messages": [{"role": "user", "content": prompt}],
             "temperature": 0.3,
-            "max_tokens": 1000
         }
         
         async with httpx.AsyncClient(timeout=360.0) as client:
@@ -1272,7 +1286,6 @@ Respond ONLY with a valid JSON array, no other text or markdown:
             "model": self.TEXT_MODEL,
             "messages": [{"role": "user", "content": prompt}],
             "temperature": 0.3,
-            "max_tokens": 12000
         }
         
         async with httpx.AsyncClient(timeout=180.0) as client:
@@ -1324,19 +1337,21 @@ Respond ONLY with a valid JSON array, no other text or markdown:
         image_urls: List[str],
         visual_description: str,
         candidate_categories: List[Dict[str, Any]],
-        language: str
+        language: str,
+        known_defects: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         """
         Select the best category from candidates and generate final output.
-        
+
         This is Step 3 of the image-to-form flow.
-        
+
         Args:
             image_urls: List of URLs of product images
             visual_description: The visual description from Step 1
             candidate_categories: List of candidate categories with their attributes from Step 2
             language: Target language for the output
-            
+            known_defects: Optional list of seller-provided known defects to incorporate in the description
+
         Returns:
             Dictionary with:
                 - description: Product description in target language
@@ -1362,7 +1377,8 @@ Respond ONLY with a valid JSON array, no other text or markdown:
             visual_description=visual_description,
             candidate_categories=candidate_categories,
             language=language,
-            image_count=len(image_urls)
+            image_count=len(image_urls),
+            known_defects=known_defects,
         )
         input_char_count = len(prompt)
         
@@ -1385,7 +1401,6 @@ Respond ONLY with a valid JSON array, no other text or markdown:
             "model": self.MODEL,
             "messages": [{"role": "user", "content": content}],
             "temperature": 0.3,
-            "max_tokens": 3000,
             "usage": {"include": True}
         }
         
@@ -1493,13 +1508,23 @@ Respond ONLY with a valid JSON array, no other text or markdown:
         visual_description: str,
         candidate_categories: List[Dict[str, Any]],
         language: str,
-        image_count: int = 1
+        image_count: int = 1,
+        known_defects: Optional[List[str]] = None,
     ) -> str:
         """Build prompt for category selection and output generation (aligned with marketplace prompt)."""
-        
         image_text = "these images" if image_count > 1 else "this image"
         image_instruction = f"Analyze all {image_count} images provided" if image_count > 1 else "Analyze this image"
-        
+
+        defects_section = ""
+        if known_defects and len(known_defects) > 0:
+            defects_list = "\n".join(f"- {d}" for d in known_defects)
+            defects_section = f"""
+KNOWN DEFECTS (seller-provided; MUST be incorporated in the description):
+{defects_list}
+
+When writing the description: state these defects clearly and completely so buyers are fully informed, but phrase them in a neutral, honest way that still highlights the product's value and appeal. The description must both communicate defects transparently and remain attractive to interested buyers.
+"""
+
         categories_section = ""
         for i, cat in enumerate(candidate_categories, 1):
             attrs = ", ".join(cat.get("relevant_attributes", []))
@@ -1512,7 +1537,7 @@ Category {i}:
         
         prompt = f"""{image_instruction} and extract all relevant information for a marketplace listing form.
 All {image_text} show the same product from different angles or views. Combine information from all images to get a complete picture of the product.
-
+{defects_section}
 FIRST: Select the BEST matching category from the following CANDIDATE CATEGORIES. Use the selected category's "Relevant Attributes" list when filling the attributes field below.
 
 CANDIDATE CATEGORIES (choose exactly one):
@@ -1525,7 +1550,7 @@ Respond ONLY with a valid JSON object in {language} language. Do not include any
 
 REQUIRED FIELDS (always include these):
 - title: Product/item title (string, required) - generate from the images
-- description: Detailed, marketing-friendly description of the product/item (string, required) - generate by looking at the images; make it compelling and appealing to buyers; highlight key benefits/features and condition
+- description: Detailed, marketing-friendly description of the product/item (string, required) - generate by looking at the images; make it compelling and appealing to buyers; highlight key benefits/features and condition. If known defects were provided above, integrate them clearly and completely into this description while keeping it attractive.
 - category: The selected category ONLY - use this exact format: {{ "id_path": "<id_path of selected category>", "category_path": "<category_path of selected category>" }}
 - condition: Condition of the item. Must be one of the following exact values (string, or null if not determinable):
   * "Brand New or Unused": never opened or used
@@ -1672,7 +1697,6 @@ Do not include any explanations or markdown formatting outside the JSON."""
             "model": self.MODEL,
             "messages": [{"role": "user", "content": content}],
             "temperature": 0.3,
-            "max_tokens": 1500
         }
         
         async with httpx.AsyncClient(timeout=60.0) as client:
@@ -1831,7 +1855,6 @@ Do not include any explanations or markdown formatting outside the JSON."""
             "model": self.MODEL,
             "messages": [{"role": "user", "content": content}],
             "temperature": 0.2,
-            "max_tokens": 500,
             "usage": {"include": True},
         }
 
@@ -1898,7 +1921,6 @@ Do not include any explanations or markdown formatting outside the JSON."""
             "model": self.MODEL,
             "messages": [{"role": "user", "content": content}],
             "temperature": 0.3,
-            "max_tokens": 1500,
             "usage": {"include": True},
         }
 
@@ -1962,7 +1984,6 @@ Do not include any explanations or markdown formatting outside the JSON."""
             "model": self.MODEL,
             "messages": [{"role": "user", "content": content}],
             "temperature": 0.2,
-            "max_tokens": 2000,
             "usage": {"include": True},
         }
 
@@ -2016,6 +2037,7 @@ Do not include any explanations or markdown formatting outside the JSON."""
         raw_description: str,
         eligible_fields: List[Dict[str, Any]],
         category: str = "",
+        known_defects: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         """
         Stage 5 -- Fill eligible fields using visual facts + constraints.
@@ -2033,7 +2055,11 @@ Do not include any explanations or markdown formatting outside the JSON."""
         )
 
         prompt = self._build_motor_field_value_prompt(
-            visual_facts, raw_description, eligible_fields, category=category,
+            visual_facts,
+            raw_description,
+            eligible_fields,
+            category=category,
+            known_defects=known_defects,
         )
 
         content: List[Dict[str, Any]] = [{"type": "text", "text": prompt}]
@@ -2045,10 +2071,6 @@ Do not include any explanations or markdown formatting outside the JSON."""
             "model": self.MODEL,
             "messages": [{"role": "user", "content": content}],
             "temperature": 0.3,
-            # Keep max_tokens modest; the JSON with all fields should comfortably fit
-            # within this limit while avoiding provider-side 400s for overly large
-            # generation requests.
-            "max_tokens": 1500,
             "usage": {"include": True},
         }
 
@@ -2211,8 +2233,19 @@ Respond ONLY with a valid JSON object. No markdown, no explanations outside the 
         raw_description: str,
         eligible_fields: List[Dict[str, Any]],
         category: str = "",
+        known_defects: Optional[List[str]] = None,
     ) -> str:
         facts_text = "\n".join(f"- {f}" for f in visual_facts)
+
+        defects_section = ""
+        if known_defects and len(known_defects) > 0:
+            defects_list = "\n".join(f"- {d}" for d in known_defects)
+            defects_section = f"""
+KNOWN DEFECTS (seller-provided; MUST be incorporated in the Description field):
+{defects_list}
+
+When writing the Description: state these defects clearly and completely so buyers are fully informed, but phrase them in a neutral, honest way that still highlights the vehicle/item's value and appeal (e.g., "minor wear on X, otherwise in great condition"). The description must both communicate defects transparently and remain attractive to interested buyers.
+"""
 
         fields_section = ""
         for ef in eligible_fields:
@@ -2247,7 +2280,7 @@ Fill the fields with the following semantics:
             category_specific_instructions = ""
 
         return f"""You are a vehicle listing form assistant. Your job is to fill in as many form fields as possible using the visual evidence, your automotive knowledge, and reasonable inference. The user will review and correct all values, so it is much better to provide a reasonable best guess with a lower confidence score than to leave a field empty.
-
+{defects_section}
 VISUAL FACTS AND INFERENCES:
 {facts_text}
 
@@ -2265,7 +2298,7 @@ INSTRUCTIONS:
    - NULL (confidence 0.0): ONLY use null when the field is truly unknowable from images and inference combined (e.g., exact mileage, exact year with no visible badge, registration details).
 2. If a field has allowed values, you MUST pick ONLY from the allowed list shown next to that field. If unsure which, pick the most likely one with a lower confidence rather than null.
 3. IMPORTANT: The user will review every value. Providing a reasonable guess that the user can quickly confirm or change is far more helpful than leaving fields empty.
-4. For the "Description" form field: write a 2-4 sentence marketing-style listing description that appeals to buyers. Base it on the images and the filled fields. Highlight condition, key features, and selling points. Write in a persuasive, professional tone. Use the same value/confidence format as all other fields.
+4. For the "Description" form field: write a 2-4 sentence marketing-style listing description that appeals to buyers. Base it on the images and the filled fields. Highlight condition, key features, and selling points. Write in a persuasive, professional tone. If known defects were provided above, integrate them clearly and completely into the description while keeping it attractive. Use the same value/confidence format as all other fields.
 5. For the "Title" form field: write a concise, appealing listing title based on the identified make, model, year, and key feature.
 
 Respond ONLY with a valid JSON object where each key is a field name:
@@ -2504,7 +2537,6 @@ Respond ONLY with a valid JSON object where each key is a field name:
             "model": model_to_use,
             "messages": messages,
             "temperature": 0.7,  # Slightly creative for engaging copy
-            "max_tokens": 3000,
             "usage": {"include": True},
         }
 
@@ -2762,7 +2794,6 @@ Now write the listing description:"""
             "model": self.MODEL,
             "messages": messages,
             "temperature": 0.2,  # Low temperature for factual comparison
-            "max_tokens": 4000,
             "usage": {"include": True},
         }
 
@@ -3179,7 +3210,6 @@ following structure:
             "model": self.MODEL,
             "messages": messages,
             "temperature": 0.1,
-            "max_tokens": 4000,
             "usage": {"include": True},
         }
 
@@ -3289,7 +3319,6 @@ following structure:
             "model": self.TEXT_MODEL,
             "messages": messages,
             "temperature": 0.1,
-            "max_tokens": 4000,
             "usage": {"include": True},
         }
 
