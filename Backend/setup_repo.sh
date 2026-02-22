@@ -26,6 +26,7 @@ NC='\033[0m' # No Color
 # Default configuration values (used if not set via environment variables)
 DEFAULT_OPENROUTER_API_KEY="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"
 DEFAULT_OPENROUTER_BASE_URL="https://openrouter.ai/api/v1/chat/completions"
+DEFAULT_OPENROUTER_EMBEDDING_URL="https://openrouter.ai/api/v1/embeddings"
 DEFAULT_LOG_DIR="logs"
 DEFAULT_ANALYTICS_CSV_PATH="analytics/inference_analytics.csv"
 DEFAULT_CREATE_DOCKER_IMAGE="true"
@@ -34,6 +35,8 @@ DEFAULT_DOCKER_IMAGE_TAG="v1.0.0"
 DEFAULT_START_CONTAINER="true"
 DEFAULT_FASTAPI_PORT="8001"
 DEFAULT_CONTAINER_NAME="ma3roodagents1-container"
+DEFAULT_PULL_QDRANT_IMAGE="false"
+DEFAULT_QDRANT_HOST_STORAGE_PATH=""  # Set at runtime to BACKEND_DIR/qdrant_storage when in Backend
 
 # Get repository URL from argument or environment variable
 REPO_URL="${1:-${GITHUB_REPO_URL}}"
@@ -154,6 +157,7 @@ update_env_var() {
 
 OPENROUTER_API_KEY_VALUE="${OPENROUTER_API_KEY:-$DEFAULT_OPENROUTER_API_KEY}"
 OPENROUTER_BASE_URL_VALUE="${OPENROUTER_BASE_URL:-$DEFAULT_OPENROUTER_BASE_URL}"
+OPENROUTER_EMBEDDING_URL_VALUE="${OPENROUTER_EMBEDDING_URL:-$DEFAULT_OPENROUTER_EMBEDDING_URL}"
 LOG_DIR_VALUE="${LOG_DIR:-$DEFAULT_LOG_DIR}"
 ANALYTICS_CSV_PATH_VALUE="${ANALYTICS_CSV_PATH:-$DEFAULT_ANALYTICS_CSV_PATH}"
 
@@ -165,6 +169,11 @@ fi
 if [ -n "$OPENROUTER_BASE_URL_VALUE" ]; then
     update_env_var "OPENROUTER_BASE_URL" "$OPENROUTER_BASE_URL_VALUE" "$ENV_FILE"
     echo -e "${GREEN}Updated OPENROUTER_BASE_URL${NC}"
+fi
+
+if [ -n "$OPENROUTER_EMBEDDING_URL_VALUE" ]; then
+    update_env_var "OPENROUTER_EMBEDDING_URL" "$OPENROUTER_EMBEDDING_URL_VALUE" "$ENV_FILE"
+    echo -e "${GREEN}Updated OPENROUTER_EMBEDDING_URL${NC}"
 fi
 
 if [ -n "$LOG_DIR_VALUE" ]; then
@@ -443,6 +452,47 @@ if [ "$SHOULD_START_CONTAINER" = true ]; then
     else
         echo -e "${RED}Error: Failed to start Docker container${NC}"
         exit 1
+    fi
+fi
+
+# Optional: pull Qdrant image, then run Qdrant server (run server whether or not pull was done)
+PULL_QDRANT_IMAGE_VALUE="${PULL_QDRANT_IMAGE:-${DEFAULT_PULL_QDRANT_IMAGE}}"
+QDRANT_HOST_STORAGE_PATH="${QDRANT_HOST_STORAGE_PATH:-${DEFAULT_QDRANT_HOST_STORAGE_PATH}}"
+if [ -z "$QDRANT_HOST_STORAGE_PATH" ]; then
+    QDRANT_HOST_STORAGE_PATH="$BACKEND_DIR/qdrant_storage"
+fi
+
+if command -v docker &> /dev/null; then
+    if is_true "$PULL_QDRANT_IMAGE_VALUE"; then
+        echo -e "${YELLOW}Pulling Qdrant image...${NC}"
+        set +e
+        docker pull qdrant/qdrant
+        set -e
+        echo -e "${GREEN}Qdrant image pull completed${NC}"
+    fi
+
+    # Run Qdrant server (whether we pulled or not)
+    QDRANT_CONTAINER_NAME="qdrant"
+    set +e
+    docker ps -a --filter "name=^${QDRANT_CONTAINER_NAME}$" --format "{{.Names}}" | grep -q "^${QDRANT_CONTAINER_NAME}$"
+    QDRANT_CONTAINER_EXISTS=$?
+    set -e
+    if [ $QDRANT_CONTAINER_EXISTS -eq 0 ]; then
+        echo -e "${YELLOW}Qdrant container already exists. Stopping and removing...${NC}"
+        docker stop "$QDRANT_CONTAINER_NAME" 2>/dev/null || true
+        docker rm "$QDRANT_CONTAINER_NAME" 2>/dev/null || true
+    fi
+    echo -e "${YELLOW}Starting Qdrant server (storage: $QDRANT_HOST_STORAGE_PATH)${NC}"
+    docker run -d \
+        --name "$QDRANT_CONTAINER_NAME" \
+        -p 6333:6333 \
+        -p 6334:6334 \
+        -v "${QDRANT_HOST_STORAGE_PATH}:/qdrant/storage:z" \
+        qdrant/qdrant
+    if [ $? -eq 0 ]; then
+        echo -e "${GREEN}Qdrant server started (http://localhost:6333)${NC}"
+    else
+        echo -e "${YELLOW}Warning: Could not start Qdrant container${NC}"
     fi
 fi
 

@@ -21,6 +21,8 @@ RUN pip3 install --break-system-packages passlib==1.7.4
 RUN pip3 install --break-system-packages python-multipart==0.0.6
 RUN pip3 install --break-system-packages python-dateutil==2.8.2
 RUN pip3 install --break-system-packages httpx==0.25.2
+RUN pip3 install --break-system-packages qdrant-client==1.7.0
+RUN pip3 install --break-system-packages 'json-repair>=0.7.0'
 
 # Install Node.js and npm
 RUN apt-get update && \

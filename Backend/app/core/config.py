@@ -23,7 +23,7 @@ class Settings(BaseSettings):
     # OpenRouter Configuration
     OPENROUTER_API_KEY: Optional[str] = None
     OPENROUTER_BASE_URL: str = "https://openrouter.ai/api/v1/chat/completions"
-    OPENROUTER_EMBEDDING_URL: str = "http://host.docker.internal:12434/engines/v1/embeddings"
+    OPENROUTER_EMBEDDING_URL: str = "https://openrouter.ai/api/v1/embeddings"
     
     # QDrant Configuration
     # When Backend runs in Docker: use QDRANT_HOST=host.docker.internal to reach QDrant on host,

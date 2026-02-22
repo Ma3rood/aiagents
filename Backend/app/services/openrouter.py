@@ -39,7 +39,7 @@ class OpenRouterService:
     
     MODEL = "qwen/qwen3-vl-235b-a22b-instruct"  # Vision model for image processing
     TEXT_MODEL = "qwen/qwen3-235b-a22b"  # Text model for translation and text tasks
-    EMBEDDING_MODEL = "docker.io/ai/qwen3-embedding:8B-Q4_K_M"  # Embedding model for semantic search
+    EMBEDDING_MODEL = "qwen/qwen3-embedding-8b"  # Embedding model for semantic search
     
     # Root categories for marketplace classification
     ROOT_CATEGORIES = [
