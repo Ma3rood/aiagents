@@ -42,6 +42,22 @@ tags_metadata = [
         "name": "motor-image-to-form",
         "description": "Motor Image-to-Form AI Agent. Analyzes vehicle/motor images and returns a pre-filled listing form with confidence scores, driven by CSV-defined schemas. Supports 13 motor categories: Cars, Motorbikes, Boats & marine, Trucks, and more.",
     },
+    {
+        "name": "image-to-form",
+        "description": "Marketplace Image-to-Form AI Agent. Converts product images into pre-filled listing form data using semantic category search across 4000+ categories.",
+    },
+    {
+        "name": "listing-description",
+        "description": "Generate market-appealing, customer-engaging product listing descriptions from images and form field values.",
+    },
+    {
+        "name": "listing-verification",
+        "description": "Verify that product images match form field values with resemblance scores and per-field/image reports.",
+    },
+    {
+        "name": "listing-legitimacy",
+        "description": "Check listing legitimacy by flagging policy-violating content in images and text fields.",
+    },
 ]
 
 app = FastAPI(
@@ -124,7 +140,11 @@ async def root():
             "health": f"{settings.API_V1_PREFIX}/health",
             "translation": f"{settings.API_V1_PREFIX}/translation",
             "category-embeddings": f"{settings.API_V1_PREFIX}/category-embeddings",
-            "motor_image_to_form": f"{settings.API_V1_PREFIX}/motor-image-to-form"
+            "image_to_form": f"{settings.API_V1_PREFIX}/image-to-form",
+            "motor_image_to_form": f"{settings.API_V1_PREFIX}/motor-image-to-form",
+            "listing_description": f"{settings.API_V1_PREFIX}/listing-description",
+            "listing_verification": f"{settings.API_V1_PREFIX}/listing-verification",
+            "listing_legitimacy": f"{settings.API_V1_PREFIX}/listing-legitimacy",
         }
     }
 
