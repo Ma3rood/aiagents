@@ -1,6 +1,14 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, HttpUrl
 from typing import Dict, Any, List, Optional
+from app.api.deps import (
+    VISION_EMBEDDING_HEADERS_DOCS,
+    VISION_HEADERS_DOCS,
+    OpenRouterHeaderOverrides,
+    create_openrouter_service,
+    get_vision_embedding_overrides,
+    get_vision_overrides,
+)
 from app.services.openrouter import OpenRouterService
 from app.services.qdrant_service import get_qdrant_service
 from app.core.logging_config import get_logger
@@ -37,10 +45,17 @@ class ImageToFormResponse(BaseModel):
     "",
     response_model=Dict[str, Any],
     summary="Extract Form Data from Images",
-    description="Convert product images to marketplace listing form data using AI vision models with semantic category search",
+    description=(
+        "Convert product images to marketplace listing form data using AI vision models "
+        "with semantic category search.\n"
+        + VISION_EMBEDDING_HEADERS_DOCS
+    ),
     response_description="Extracted form data including product details like description, category, condition, and attributes"
 )
-async def image_to_form_agent(request: ImageToFormRequest):
+async def image_to_form_agent(
+    request: ImageToFormRequest,
+    openrouter_overrides: OpenRouterHeaderOverrides = Depends(get_vision_embedding_overrides),
+):
     """
     Convert multiple images of the same product to marketplace listing form data using AI agent.
     
@@ -60,6 +75,9 @@ async def image_to_form_agent(request: ImageToFormRequest):
     - `selected_language`: Target language for extraction (e.g., "en", "ar")
     - `use_semantic_search`: Enable semantic category search (default: True)
     - `known_defects`: Optional list of known defects (strings) to incorporate in the description; defects are communicated clearly while keeping the listing attractive
+    
+    **Headers (optional, override env defaults):**
+    - `X-Api-Key`, `X-Base-Url`, `X-Embedding-Url`, `X-Model`, `X-Embedding-Model`
     
     **Response:**
     - `status`: Success status
@@ -97,8 +115,8 @@ async def image_to_form_agent(request: ImageToFormRequest):
         image_urls = [str(url) for url in request.image_urls]
         logger.debug(f"Processing {len(image_urls)} image(s) for form extraction")
         
-        # Initialize services
-        openrouter_service = OpenRouterService()
+        # Initialize services (header overrides take precedence over env)
+        openrouter_service = create_openrouter_service(openrouter_overrides)
         
         if request.use_semantic_search:
             # Use 3-step semantic search flow
@@ -233,9 +251,15 @@ async def _process_with_semantic_search(
     "/legacy",
     response_model=Dict[str, Any],
     summary="Extract Form Data (Legacy)",
-    description="Legacy endpoint that uses single-call extraction without semantic search"
+    description=(
+        "Legacy endpoint that uses single-call extraction without semantic search.\n"
+        + VISION_HEADERS_DOCS
+    ),
 )
-async def image_to_form_legacy(request: ImageToFormRequest):
+async def image_to_form_legacy(
+    request: ImageToFormRequest,
+    openrouter_overrides: OpenRouterHeaderOverrides = Depends(get_vision_overrides),
+):
     """
     Legacy endpoint for image-to-form extraction without semantic category search.
     
@@ -251,7 +275,7 @@ async def image_to_form_legacy(request: ImageToFormRequest):
             raise HTTPException(status_code=400, detail="At least one image URL is required")
         
         image_urls = [str(url) for url in request.image_urls]
-        openrouter_service = OpenRouterService()
+        openrouter_service = create_openrouter_service(openrouter_overrides)
         
         form_data = await openrouter_service.extract_form_fields_from_images(
             image_urls=image_urls,

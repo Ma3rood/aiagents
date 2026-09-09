@@ -92,8 +92,8 @@ class MotorAgentService:
         result = await agent.run(image_urls=["https://..."], combined_vision=False)
     """
 
-    def __init__(self) -> None:
-        self.openrouter = OpenRouterService()
+    def __init__(self, openrouter: Optional[OpenRouterService] = None) -> None:
+        self.openrouter = openrouter or OpenRouterService()
         self.schema_loader = get_motor_schema_loader()
         self.confidence_threshold: float = settings.MOTOR_CONFIDENCE_THRESHOLD
 

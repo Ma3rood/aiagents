@@ -8,10 +8,15 @@ Returns a verification report showing how well the images match
 each form field and vice-versa, with resemblance scores and booleans.
 """
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, HttpUrl
 from typing import Any, Dict, List, Optional
-from app.services.openrouter import OpenRouterService
+from app.api.deps import (
+    VISION_HEADERS_DOCS,
+    OpenRouterHeaderOverrides,
+    create_openrouter_service,
+    get_vision_overrides,
+)
 from app.core.logging_config import get_logger
 
 logger = get_logger(__name__)
@@ -118,11 +123,15 @@ def _normalize_field_results(
     description=(
         "Compare product images against listing form field values. "
         "Returns per-image and per-field resemblance scores with "
-        "match booleans, plus an overall verdict."
+        "match booleans, plus an overall verdict.\n"
+        + VISION_HEADERS_DOCS
     ),
     response_description="Structured verification report with scores and match flags",
 )
-async def verify_listing(request: ListingVerificationRequest):
+async def verify_listing(
+    request: ListingVerificationRequest,
+    openrouter_overrides: OpenRouterHeaderOverrides = Depends(get_vision_overrides),
+):
     """
     Verify how well product images match the listing form field values.
 
@@ -137,6 +146,9 @@ async def verify_listing(request: ListingVerificationRequest):
     **Request:**
     - ``image_urls``: List of product image URLs (at least one required)
     - ``form_fields``: Dictionary of listing form field key-value pairs
+
+    **Headers (optional, override env defaults):**
+    - ``X-Api-Key``, ``X-Base-Url``, ``X-Model``
 
     **Response:**
     - ``status``: ``"success"``
@@ -169,7 +181,7 @@ async def verify_listing(request: ListingVerificationRequest):
     image_urls = [str(url) for url in request.image_urls]
 
     try:
-        openrouter_service = OpenRouterService()
+        openrouter_service = create_openrouter_service(openrouter_overrides)
         report = await openrouter_service.verify_listing(
             image_urls=image_urls,
             form_fields=request.form_fields,

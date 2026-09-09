@@ -7,10 +7,15 @@ Accepts product images, form field values, and a target language.
 Returns a market-appealing, customer-engaging listing description.
 """
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, HttpUrl
 from typing import Any, Dict, List
-from app.services.openrouter import OpenRouterService
+from app.api.deps import (
+    VISION_HEADERS_DOCS,
+    OpenRouterHeaderOverrides,
+    create_openrouter_service,
+    get_vision_overrides,
+)
 from app.core.logging_config import get_logger
 
 logger = get_logger(__name__)
@@ -48,11 +53,15 @@ class ListingDescriptionResponse(BaseModel):
     description=(
         "Generate a market-appealing, customer-engaging product listing "
         "description from images, form field values, and a target language. "
-        "The AI acts like an expert salesperson to craft compelling copy."
+        "The AI acts like an expert salesperson to craft compelling copy.\n"
+        + VISION_HEADERS_DOCS
     ),
     response_description="Generated listing description in the selected language",
 )
-async def generate_listing_description(request: ListingDescriptionRequest):
+async def generate_listing_description(
+    request: ListingDescriptionRequest,
+    openrouter_overrides: OpenRouterHeaderOverrides = Depends(get_vision_overrides),
+):
     """
     Generate a compelling marketplace listing description.
 
@@ -65,6 +74,9 @@ async def generate_listing_description(request: ListingDescriptionRequest):
     - ``form_fields``: Dictionary of listing form field key-value pairs
       (e.g. title, category, condition, price, attributes …)
     - ``selected_language``: Target language code (e.g. ``"en"``, ``"ar"``)
+
+    **Headers (optional, override env defaults):**
+    - ``X-Api-Key``, ``X-Base-Url``, ``X-Model``
 
     **Response:**
     - ``status``: ``"success"``
@@ -94,7 +106,7 @@ async def generate_listing_description(request: ListingDescriptionRequest):
     image_urls = [str(url) for url in request.image_urls]
 
     try:
-        openrouter_service = OpenRouterService()
+        openrouter_service = create_openrouter_service(openrouter_overrides)
         description = await openrouter_service.generate_listing_description(
             image_urls=image_urls,
             form_fields=request.form_fields,

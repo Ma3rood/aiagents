@@ -1,7 +1,12 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from typing import Dict, Any, Optional, Literal
-from app.services.openrouter import OpenRouterService
+from app.api.deps import (
+    TEXT_HEADERS_DOCS,
+    OpenRouterHeaderOverrides,
+    create_openrouter_service,
+    get_text_overrides,
+)
 from app.core.logging_config import get_logger
 
 logger = get_logger(__name__)
@@ -38,10 +43,18 @@ class TranslationResponse(BaseModel):
     "",
     response_model=TranslationResponse,
     summary="Translate Listing Fields",
-    description="Translate listing fields to target language using context-aware AI translation. Supports multiple listing types (Marketplace, Motors, Services, Jobs, Property) with type-specific terminology and context.",
+    description=(
+        "Translate listing fields to target language using context-aware AI translation. "
+        "Supports multiple listing types (Marketplace, Motors, Services, Jobs, Property) "
+        "with type-specific terminology and context.\n"
+        + TEXT_HEADERS_DOCS
+    ),
     response_description="Translated fields with original and translated text for each field"
 )
-async def translate_listing_fields(request: TranslationRequest):
+async def translate_listing_fields(
+    request: TranslationRequest,
+    openrouter_overrides: OpenRouterHeaderOverrides = Depends(get_text_overrides),
+):
     """
     Translate listing fields to the target language using AI agent.
     
@@ -62,6 +75,9 @@ async def translate_listing_fields(request: TranslationRequest):
     - `listing_type`: Type of listing - Marketplace, Motors, Services, Jobs, or Property (defaults to Marketplace)
     - `model`: Optional AI model name (defaults to Qwen 3)
     
+    **Headers (optional, override body/env defaults):**
+    - `X-Api-Key`, `X-Base-Url`, `X-Model` / `X-Text-Model` (header model wins over body `model`)
+    
     **Response:**
     - `status`: Success status
     - `target_language`: Language code used for translation
@@ -81,11 +97,17 @@ async def translate_listing_fields(request: TranslationRequest):
     Raises:
         HTTPException: 400 if no fields provided, 500 for translation errors
     """
+    # Header model takes precedence over request body model
+    model_to_use = (
+        openrouter_overrides.text_model
+        or openrouter_overrides.model
+        or request.model
+    )
     logger.info(
         f"Translation request - Target language: {request.target_language}, "
         f"Listing type: {request.listing_type}, "
         f"Fields count: {len(request.fields) if request.fields else 0}, "
-        f"Model: {request.model or 'default'}"
+        f"Model: {model_to_use or 'default'}"
     )
     
     try:
@@ -93,8 +115,8 @@ async def translate_listing_fields(request: TranslationRequest):
             logger.warning("Translation request rejected: No fields provided")
             raise HTTPException(status_code=400, detail="At least one field is required for translation")
         
-        # Initialize OpenRouter service
-        openrouter_service = OpenRouterService()
+        # Initialize OpenRouter service (header overrides take precedence over env)
+        openrouter_service = create_openrouter_service(openrouter_overrides)
         
         # Prepare fields for translation
         fields_to_translate = {field.field_name: field.text for field in request.fields}
@@ -107,7 +129,7 @@ async def translate_listing_fields(request: TranslationRequest):
             listing_details=request.listing_details,
             target_language=request.target_language,
             listing_type=request.listing_type,
-            model=request.model
+            model=model_to_use
         )
         
         # Build response

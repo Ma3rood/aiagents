@@ -7,9 +7,15 @@ Accepts vehicle image URLs and returns a confidence-scored, CSV-schema-driven
 form pre-filled with visually observable data.
 """
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, HttpUrl
 from typing import Any, Dict, List, Optional
+from app.api.deps import (
+    VISION_HEADERS_DOCS,
+    OpenRouterHeaderOverrides,
+    create_openrouter_service,
+    get_vision_overrides,
+)
 from app.services.motor_agent import MotorAgentService
 from app.core.logging_config import get_logger
 
@@ -69,11 +75,15 @@ class MotorImageToFormResponse(BaseModel):
         "Analyze vehicle/motor images and return a pre-filled listing form "
         "driven by CSV-defined schemas. Uses a 6-stage AI pipeline: "
         "category detection, visual facts extraction, schema loading, "
-        "field eligibility resolution, field value generation, and output assembly."
+        "field eligibility resolution, field value generation, and output assembly.\n"
+        + VISION_HEADERS_DOCS
     ),
     response_description="Pre-filled motor listing form with confidence scores per field",
 )
-async def motor_image_to_form(request: MotorImageToFormRequest):
+async def motor_image_to_form(
+    request: MotorImageToFormRequest,
+    openrouter_overrides: OpenRouterHeaderOverrides = Depends(get_vision_overrides),
+):
     """
     Convert vehicle/motor images into a marketplace listing form.
 
@@ -89,6 +99,9 @@ async def motor_image_to_form(request: MotorImageToFormRequest):
     - ``image_urls``: one or more image URLs of the same vehicle/item
     - ``combined_vision``: if *true*, stages 1+2 run in a single VLM call (faster)
     - ``known_defects``: optional list of known defects (strings) to incorporate in the description; defects are communicated clearly while keeping the listing attractive
+
+    **Headers (optional, override env defaults):**
+    - `X-Api-Key`, `X-Base-Url`, `X-Model`
 
     **Response:**
     - ``status``: ``"success"`` or ``"partial"`` (if a stage failed)
@@ -109,7 +122,8 @@ async def motor_image_to_form(request: MotorImageToFormRequest):
     image_urls = [str(url) for url in request.image_urls]
 
     try:
-        agent = MotorAgentService()
+        openrouter_service = create_openrouter_service(openrouter_overrides)
+        agent = MotorAgentService(openrouter=openrouter_service)
         result = await agent.run(
             image_urls=image_urls,
             combined_vision=request.combined_vision,

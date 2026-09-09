@@ -2,9 +2,15 @@ import csv
 import json
 import asyncio
 import os
-from fastapi import APIRouter, HTTPException, BackgroundTasks
-from pydantic import BaseModel
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from pydantic import BaseModel, Field
 from typing import Dict, Any, Optional, List
+from app.api.deps import (
+    TEXT_EMBEDDING_HEADERS_DOCS,
+    OpenRouterHeaderOverrides,
+    create_openrouter_service,
+    get_text_embedding_overrides,
+)
 from app.services.openrouter import OpenRouterService
 from app.services.qdrant_service import get_qdrant_service
 from app.core.logging_config import get_logger
@@ -30,11 +36,79 @@ embedding_progress: Dict[str, Any] = {
 
 
 class CategoryEmbeddingRequest(BaseModel):
-    semantic_batch_size: int = 20
-    embedding_batch_size: int = 50
-    start_from: int = 0
-    limit: Optional[int] = None
-    skip_phase1: bool = False
+    semantic_batch_size: int = Field(
+        default=20,
+        ge=1,
+        description=(
+            "Phase 1 batch size: how many category paths are sent together in a single "
+            "text-model LLM call to generate semantic descriptions. Larger values reduce "
+            "API round-trips but increase prompt size and failure blast radius for that batch."
+        ),
+        example=20,
+    )
+    embedding_batch_size: int = Field(
+        default=50,
+        ge=1,
+        description=(
+            "Phase 2 batch size: how many semantic-description rows are embedded together "
+            "in one embeddings API call and then upserted to QDrant in the same batch. "
+            "Larger values are faster but use more memory per request."
+        ),
+        example=50,
+    )
+    start_from: int = Field(
+        default=0,
+        ge=0,
+        description="Phase 1 only: 0-based index into the hierarchy CSV to start from (for resume).",
+    )
+    limit: Optional[int] = Field(
+        default=None,
+        ge=1,
+        description="Phase 1 only: optional max number of categories to process after start_from.",
+    )
+    skip_phase1: bool = Field(
+        default=False,
+        description=(
+            "If true, skip Phase 1 and run Phase 2 only using the existing semantic "
+            "descriptions CSV. Useful when descriptions are already generated."
+        ),
+    )
+
+
+GENERATE_EMBEDDINGS_DOCS = """
+Generate category semantic descriptions and vector embeddings, then store them in QDrant.
+
+This is a **long-running background job**. Poll `GET /category-embeddings/status` for progress.
+
+## Phase 1 - Semantic descriptions
+
+1. Loads all categories from the hierarchy CSV (`ma3rood_hierarchy.csv`).
+2. Splits them into batches of `semantic_batch_size` (default **20**).
+3. For each batch, calls the **text model** once to produce:
+   - a `semantic_description` (what products belong in that category)
+   - `relevant_attributes` for listings in that category
+4. Appends results to the semantic descriptions CSV
+   (`category_semantic_descriptions.csv`).
+
+Use `start_from` / `limit` to process a subset, or `skip_phase1=true` to reuse an existing semantic CSV.
+
+## Phase 2 - Embeddings + QDrant
+
+1. Loads rows from the semantic descriptions CSV produced in Phase 1.
+2. Splits them into batches of `embedding_batch_size` (default **50**).
+3. For each batch:
+   - calls the **embedding model** once for all descriptions in the batch
+   - upserts the resulting vectors + metadata into the QDrant collection
+
+## Batching summary
+
+| Parameter | Phase | Default | Meaning |
+|-----------|-------|---------|---------|
+| `semantic_batch_size` | Phase 1 | 20 | Categories per text-LLM request |
+| `embedding_batch_size` | Phase 2 | 50 | Descriptions per embedding request + QDrant upsert |
+
+Phases run sequentially (Phase 1 then Phase 2), unless `skip_phase1` is set.
+""" + TEXT_EMBEDDING_HEADERS_DOCS
 
 
 class CategoryEmbeddingResponse(BaseModel):
@@ -237,7 +311,8 @@ async def generate_embeddings_task(
     categories: List[Dict[str, str]],
     semantic_batch_size: int,
     embedding_batch_size: int,
-    skip_phase1: bool
+    skip_phase1: bool,
+    openrouter_overrides: Optional[OpenRouterHeaderOverrides] = None,
 ):
     """
     Background task: Phase 1 = generate semantic descriptions in batches and write to CSV;
@@ -252,7 +327,7 @@ async def generate_embeddings_task(
     embedding_progress["errors"] = []
     
     try:
-        openrouter = OpenRouterService()
+        openrouter = create_openrouter_service(openrouter_overrides)
         qdrant_service = get_qdrant_service()
         qdrant_service.ensure_collection_exists()
         
@@ -298,27 +373,30 @@ async def generate_embeddings_task(
     "/generate",
     response_model=CategoryEmbeddingResponse,
     summary="Generate Category Embeddings",
-    description="Generate semantic descriptions and embeddings for all categories and store them in QDrant"
+    description=GENERATE_EMBEDDINGS_DOCS,
 )
 async def generate_category_embeddings(
     request: CategoryEmbeddingRequest,
-    background_tasks: BackgroundTasks
+    background_tasks: BackgroundTasks,
+    openrouter_overrides: OpenRouterHeaderOverrides = Depends(get_text_embedding_overrides),
 ):
     """
-    Generate embeddings for all categories from the CSV file.
-    
-    This is a long-running operation that runs in the background.
-    Use the /status endpoint to check progress.
-    
-    **Request Parameters:**
-    - `semantic_batch_size`: Categories per LLM call in Phase 1 (default: 20)
-    - `embedding_batch_size`: Rows per embedding/QDrant batch in Phase 2 (default: 50)
-    - `start_from`: Index to start processing from (for resuming)
-    - `limit`: Optional limit on number of categories to process
-    - `skip_phase1`: If true, skip Phase 1 and use existing semantic CSV for Phase 2
-    
-    **Returns:**
-    - Status of the embedding generation task
+    Generate embeddings for all categories from the hierarchy CSV (background job).
+
+    ## Phase 1 - Semantic descriptions
+    Loads categories from the hierarchy CSV and, in batches of `semantic_batch_size`
+    (default 20), calls the text model to generate a semantic description and relevant
+    attributes for each category. Results are appended to the semantic descriptions CSV.
+
+    ## Phase 2 - Embeddings + QDrant
+    Loads the semantic CSV and, in batches of `embedding_batch_size` (default 50),
+    creates embedding vectors and upserts them into QDrant.
+
+    ## Batching
+    - **semantic_batch_size**: categories per Phase 1 text-LLM call
+    - **embedding_batch_size**: descriptions per Phase 2 embedding call + QDrant upsert
+
+    Use `/status` to monitor progress. Set `skip_phase1=true` to run Phase 2 only.
     """
     global embedding_progress
     
@@ -355,7 +433,8 @@ async def generate_category_embeddings(
         categories=categories,
         semantic_batch_size=request.semantic_batch_size,
         embedding_batch_size=request.embedding_batch_size,
-        skip_phase1=request.skip_phase1
+        skip_phase1=request.skip_phase1,
+        openrouter_overrides=openrouter_overrides,
     )
     
     total = len(load_semantic_descriptions_from_csv()) if request.skip_phase1 else len(categories)

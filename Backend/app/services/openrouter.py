@@ -68,14 +68,34 @@ class OpenRouterService:
         "Travel-events-activities"
     ]
     
-    def __init__(self):
-        self.api_key = settings.OPENROUTER_API_KEY
+    def __init__(
+        self,
+        api_key: Optional[str] = None,
+        base_url: Optional[str] = None,
+        embedding_url: Optional[str] = None,
+        model: Optional[str] = None,
+        text_model: Optional[str] = None,
+        embedding_model: Optional[str] = None,
+    ):
+        # Header / caller overrides take precedence over settings defaults
+        self.api_key = api_key or settings.OPENROUTER_API_KEY
         if not self.api_key:
             logger.error("OPENROUTER_API_KEY is not set in environment variables")
             raise ValueError("OPENROUTER_API_KEY is not set in environment variables")
-        self.base_url = settings.OPENROUTER_BASE_URL
-        self.embedding_url = settings.OPENROUTER_EMBEDDING_URL
-        logger.debug(f"OpenRouterService initialized - Base URL: {self.base_url}")
+        self.base_url = base_url or settings.OPENROUTER_BASE_URL
+        self.embedding_url = embedding_url or settings.OPENROUTER_EMBEDDING_URL
+        # Instance attrs shadow class defaults when overrides are provided
+        if model:
+            self.MODEL = model
+        if text_model:
+            self.TEXT_MODEL = text_model
+        if embedding_model:
+            self.EMBEDDING_MODEL = embedding_model
+        logger.debug(
+            f"OpenRouterService initialized - Base URL: {self.base_url}, "
+            f"Vision model: {self.MODEL}, Text model: {self.TEXT_MODEL}, "
+            f"Embedding model: {self.EMBEDDING_MODEL}"
+        )
     
     async def extract_form_fields_from_images(
         self,
@@ -2452,7 +2472,7 @@ Respond ONLY with a valid JSON object where each key is a field name:
         completion_details = usage.get("completion_tokens_details", {})
         analytics_service.log_analytics(
             agent_type=agent_type,
-            model=OpenRouterService.MODEL,
+            model=self.MODEL,
             provider="OpenRouter",
             prompt_tokens=usage.get("prompt_tokens", 0),
             completion_tokens=usage.get("completion_tokens", 0),

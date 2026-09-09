@@ -9,10 +9,15 @@ in both images (adult, violence, drugs, deceptive photos …)
 and text fields (hate speech, scam signals, illegal goods …).
 """
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, HttpUrl
 from typing import Any, Dict, List, Optional
-from app.services.openrouter import OpenRouterService
+from app.api.deps import (
+    VISION_TEXT_HEADERS_DOCS,
+    OpenRouterHeaderOverrides,
+    create_openrouter_service,
+    get_vision_text_overrides,
+)
 from app.core.logging_config import get_logger
 
 logger = get_logger(__name__)
@@ -107,11 +112,15 @@ class ListingLegitimacyResponse(BaseModel):
         "Inspect product images and listing form field values for "
         "policy violations (adult content, violence, drugs, scam signals, "
         "hate speech, illegal goods, misleading photos, etc.). "
-        "Returns a structured report with per-image and per-field flags."
+        "Returns a structured report with per-image and per-field flags.\n"
+        + VISION_TEXT_HEADERS_DOCS
     ),
     response_description="Structured legitimacy report with flags, risk levels, and summaries",
 )
-async def check_listing_legitimacy(request: ListingLegitimacyRequest):
+async def check_listing_legitimacy(
+    request: ListingLegitimacyRequest,
+    openrouter_overrides: OpenRouterHeaderOverrides = Depends(get_vision_text_overrides),
+):
     """
     Run a comprehensive legitimacy check on a marketplace listing.
 
@@ -130,6 +139,9 @@ async def check_listing_legitimacy(request: ListingLegitimacyRequest):
     **Request:**
     - ``image_urls``: List of product image URLs (at least one required)
     - ``form_fields``: Dictionary of listing form field key-value pairs
+
+    **Headers (optional, override env defaults):**
+    - ``X-Api-Key``, ``X-Base-Url``, ``X-Model``, ``X-Text-Model``
 
     **Response:**
     - ``status``: ``"success"``
@@ -161,7 +173,7 @@ async def check_listing_legitimacy(request: ListingLegitimacyRequest):
     image_urls = [str(url) for url in request.image_urls]
 
     try:
-        openrouter_service = OpenRouterService()
+        openrouter_service = create_openrouter_service(openrouter_overrides)
         report = await openrouter_service.check_listing_legitimacy(
             image_urls=image_urls,
             form_fields=request.form_fields,

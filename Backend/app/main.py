@@ -25,6 +25,11 @@ setup_logging(
 logger = get_logger(__name__)
 
 # OpenAPI metadata for enhanced documentation
+HEADER_OVERRIDE_NOTE = (
+    " Optional OpenRouter override headers are documented on each operation "
+    "(only the headers that endpoint uses); header values take precedence over `.env` defaults."
+)
+
 tags_metadata = [
     {
         "name": "health",
@@ -32,50 +37,115 @@ tags_metadata = [
     },
     {
         "name": "translation",
-        "description": "AI-powered translation endpoints for translating listing fields to different languages while preserving context and formatting. Supports multiple listing types: Marketplace, Motors, Services, Jobs, and Property.",
+        "description": (
+            "AI-powered translation endpoints for translating listing fields to different "
+            "languages while preserving context and formatting. Supports multiple listing "
+            "types: Marketplace, Motors, Services, Jobs, and Property."
+            + HEADER_OVERRIDE_NOTE
+        ),
     },
     {
         "name": "category-embeddings",
-        "description": "Generate semantic descriptions and embeddings for all categories and store them in QDrant",
+        "description": (
+            "Generate semantic descriptions and embeddings for all categories and store them in QDrant."
+            + HEADER_OVERRIDE_NOTE
+        ),
     },
     {
         "name": "motor-image-to-form",
-        "description": "Motor Image-to-Form AI Agent. Analyzes vehicle/motor images and returns a pre-filled listing form with confidence scores, driven by CSV-defined schemas. Supports 13 motor categories: Cars, Motorbikes, Boats & marine, Trucks, and more.",
+        "description": (
+            "Motor Image-to-Form AI Agent. Analyzes vehicle/motor images and returns a "
+            "pre-filled listing form with confidence scores, driven by CSV-defined schemas. "
+            "Supports 13 motor categories: Cars, Motorbikes, Boats & marine, Trucks, and more."
+            + HEADER_OVERRIDE_NOTE
+        ),
     },
     {
         "name": "image-to-form",
-        "description": "Marketplace Image-to-Form AI Agent. Converts product images into pre-filled listing form data using semantic category search across 4000+ categories.",
+        "description": (
+            "Marketplace Image-to-Form AI Agent. Converts product images into pre-filled "
+            "listing form data using semantic category search across 4000+ categories."
+            + HEADER_OVERRIDE_NOTE
+        ),
     },
     {
         "name": "listing-description",
-        "description": "Generate market-appealing, customer-engaging product listing descriptions from images and form field values.",
+        "description": (
+            "Generate market-appealing, customer-engaging product listing descriptions "
+            "from images and form field values."
+            + HEADER_OVERRIDE_NOTE
+        ),
     },
     {
         "name": "listing-verification",
-        "description": "Verify that product images match form field values with resemblance scores and per-field/image reports.",
+        "description": (
+            "Verify that product images match form field values with resemblance scores "
+            "and per-field/image reports."
+            + HEADER_OVERRIDE_NOTE
+        ),
     },
     {
         "name": "listing-legitimacy",
-        "description": "Check listing legitimacy by flagging policy-violating content in images and text fields.",
+        "description": (
+            "Check listing legitimacy by flagging policy-violating content in images and text fields."
+            + HEADER_OVERRIDE_NOTE
+        ),
+    },
+    {
+        "name": "info",
+        "description": "API metadata, documentation links, and usage information.",
     },
 ]
 
 app = FastAPI(
     title="Ma3rood AI Agents API",
     description="""
-    Backend API for Ma3rood AI Agents application.
-    
-    ## Features
-    
-    * **Translation**: Translate listing fields with context-aware AI translation
-    * **Health Monitoring**: Check API status and service health
-    
-    ## API Documentation
-    
-    * **Swagger UI**: Interactive API documentation at `/docs`
-    * **ReDoc**: Alternative API documentation at `/redoc`
-    * **OpenAPI Schema**: JSON schema available at `/openapi.json`
-    """,
+Backend API for Ma3rood AI Agents application.
+
+## Features
+
+* **Image to Form**: Convert product images into marketplace listing form data
+* **Motor Image to Form**: Convert vehicle images into motor listing forms
+* **Translation**: Context-aware listing field translation
+* **Listing Description**: Generate engaging listing copy from images and fields
+* **Listing Verification**: Score image vs form-field resemblance
+* **Listing Legitimacy**: Flag policy-violating content in images and text
+* **Category Embeddings**: Generate and store category embeddings in QDrant
+* **Health Monitoring**: Check API status and service health
+
+## OpenRouter override headers
+
+Agent endpoints that call OpenRouter accept optional request headers.
+**Any header that is sent takes precedence over the corresponding `.env` / settings value.**
+
+| Header | Alias | Purpose |
+|--------|-------|---------|
+| `X-Api-Key` | `X-OpenRouter-Api-Key` | API key |
+| `X-Base-Url` | `X-OpenRouter-Base-Url` | Chat completions URL |
+| `X-Embedding-Url` | `X-OpenRouter-Embedding-Url` | Embeddings URL |
+| `X-Model` | `X-Model-Name` | Vision / primary model |
+| `X-Text-Model` | — | Text model |
+| `X-Embedding-Model` | — | Embedding model |
+
+**Precedence:** header → request body (e.g. translation `model`) → environment defaults.
+
+Example:
+
+```bash
+curl -X POST http://localhost:8000/api/v1/image-to-form \\
+  -H "Content-Type: application/json" \\
+  -H "X-Api-Key: sk-or-v1-..." \\
+  -H "X-Base-Url: https://openrouter.ai/api/v1/chat/completions" \\
+  -H "X-Model: qwen/qwen3-vl-235b-a22b-instruct" \\
+  -d '{"image_urls":["https://example.com/item.jpg"],"selected_language":"en"}'
+```
+
+## API Documentation
+
+* **Swagger UI**: Interactive API documentation at `/docs`
+* **ReDoc**: Alternative API documentation at `/redoc`
+* **OpenAPI Schema**: JSON schema available at `/openapi.json`
+""",
     version="1.0.0",
     openapi_tags=tags_metadata,
     contact={
@@ -153,8 +223,48 @@ async def docs_info():
     """
     Get detailed API documentation information.
     
-    Returns comprehensive information about available endpoints, request/response formats, and usage examples.
+    Returns comprehensive information about available endpoints, request/response formats,
+    optional OpenRouter override headers, and usage examples.
     """
+    openrouter_headers = {
+        "X-Api-Key": {
+            "alias": "X-OpenRouter-Api-Key",
+            "required": False,
+            "description": "OpenRouter API key. Overrides OPENROUTER_API_KEY for this request.",
+            "example": "sk-or-v1-...",
+        },
+        "X-Base-Url": {
+            "alias": "X-OpenRouter-Base-Url",
+            "required": False,
+            "description": "Chat completions URL. Overrides OPENROUTER_BASE_URL for this request.",
+            "example": "https://openrouter.ai/api/v1/chat/completions",
+        },
+        "X-Embedding-Url": {
+            "alias": "X-OpenRouter-Embedding-Url",
+            "required": False,
+            "description": "Embeddings URL. Overrides OPENROUTER_EMBEDDING_URL for this request.",
+            "example": "https://openrouter.ai/api/v1/embeddings",
+        },
+        "X-Model": {
+            "alias": "X-Model-Name",
+            "required": False,
+            "description": "Vision / primary model name. On translation, also overrides body model.",
+            "example": "qwen/qwen3-vl-235b-a22b-instruct",
+        },
+        "X-Text-Model": {
+            "alias": None,
+            "required": False,
+            "description": "Text model name. On translation, wins over X-Model and body model.",
+            "example": "qwen/qwen3-235b-a22b",
+        },
+        "X-Embedding-Model": {
+            "alias": None,
+            "required": False,
+            "description": "Embedding model name.",
+            "example": "qwen/qwen3-embedding-8b",
+        },
+    }
+
     return {
         "api_name": "Ma3rood AI Agents API",
         "version": "1.0.0",
@@ -164,6 +274,20 @@ async def docs_info():
             "swagger_ui": "/docs",
             "redoc": "/redoc",
             "openapi_schema": "/openapi.json"
+        },
+        "openrouter_override_headers": {
+            "precedence": "header → request body (where applicable) → environment defaults",
+            "applies_to": [
+                f"{settings.API_V1_PREFIX}/image-to-form",
+                f"{settings.API_V1_PREFIX}/image-to-form/legacy",
+                f"{settings.API_V1_PREFIX}/motor-image-to-form",
+                f"{settings.API_V1_PREFIX}/translation",
+                f"{settings.API_V1_PREFIX}/listing-description",
+                f"{settings.API_V1_PREFIX}/listing-verification",
+                f"{settings.API_V1_PREFIX}/listing-legitimacy",
+                f"{settings.API_V1_PREFIX}/category-embeddings/generate",
+            ],
+            "headers": openrouter_headers,
         },
         "endpoints": {
             "health": {
@@ -179,6 +303,7 @@ async def docs_info():
                 "path": f"{settings.API_V1_PREFIX}/translation",
                 "method": "POST",
                 "description": "Translate listing fields to target language using AI with context-aware translation based on listing type",
+                "headers": openrouter_headers,
                 "request_body": {
                     "fields": [
                         {
@@ -189,7 +314,7 @@ async def docs_info():
                     "listing_details": "object (optional)",
                     "target_language": "string",
                     "listing_type": "string (optional, default: 'Marketplace') - One of: 'Marketplace', 'Motors', 'Services', 'Jobs', 'Property'",
-                    "model": "string (optional)"
+                    "model": "string (optional; overridden by X-Text-Model / X-Model when present)"
                 },
                 "response": {
                     "status": "success",
@@ -202,7 +327,43 @@ async def docs_info():
                         }
                     ]
                 }
-            }
+            },
+            "image_to_form": {
+                "path": f"{settings.API_V1_PREFIX}/image-to-form",
+                "method": "POST",
+                "description": "Convert product images to marketplace listing form data",
+                "headers": openrouter_headers,
+            },
+            "motor_image_to_form": {
+                "path": f"{settings.API_V1_PREFIX}/motor-image-to-form",
+                "method": "POST",
+                "description": "Convert vehicle images to motor listing form data",
+                "headers": openrouter_headers,
+            },
+            "listing_description": {
+                "path": f"{settings.API_V1_PREFIX}/listing-description",
+                "method": "POST",
+                "description": "Generate listing description from images and form fields",
+                "headers": openrouter_headers,
+            },
+            "listing_verification": {
+                "path": f"{settings.API_V1_PREFIX}/listing-verification",
+                "method": "POST",
+                "description": "Verify images against form field values",
+                "headers": openrouter_headers,
+            },
+            "listing_legitimacy": {
+                "path": f"{settings.API_V1_PREFIX}/listing-legitimacy",
+                "method": "POST",
+                "description": "Check listing images and text for policy violations",
+                "headers": openrouter_headers,
+            },
+            "category_embeddings_generate": {
+                "path": f"{settings.API_V1_PREFIX}/category-embeddings/generate",
+                "method": "POST",
+                "description": "Generate category semantic descriptions and embeddings",
+                "headers": openrouter_headers,
+            },
         },
         "usage_examples": {
             "health_check": {
@@ -217,12 +378,20 @@ print(response.json())
                 "curl": f"""
 curl -X POST http://localhost:8000{settings.API_V1_PREFIX}/translation \\
   -H "Content-Type: application/json" \\
+  -H "X-Api-Key: sk-or-v1-..." \\
+  -H "X-Base-Url: https://openrouter.ai/api/v1/chat/completions" \\
+  -H "X-Model: qwen/qwen3-235b-a22b" \\
   -d '{{"fields": [{{"field_name": "title", "text": "Product Title"}}], "target_language": "ar", "listing_type": "Marketplace"}}'
 """,
                 "python": f"""
 import requests
 response = requests.post(
     'http://localhost:8000{settings.API_V1_PREFIX}/translation',
+    headers={{
+        'X-Api-Key': 'sk-or-v1-...',
+        'X-Base-Url': 'https://openrouter.ai/api/v1/chat/completions',
+        'X-Model': 'qwen/qwen3-235b-a22b',
+    }},
     json={{
         "fields": [{{"field_name": "title", "text": "Product Title"}}],
         "target_language": "ar",
@@ -238,6 +407,17 @@ print(response.json())
                     "Jobs": "For job listings - focuses on job descriptions, requirements, and HR terminology",
                     "Property": "For real estate listings - focuses on property descriptions, specifications, and real estate terminology"
                 }
+            },
+            "image_to_form_with_header_overrides": {
+                "curl": f"""
+curl -X POST http://localhost:8000{settings.API_V1_PREFIX}/image-to-form \\
+  -H "Content-Type: application/json" \\
+  -H "X-Api-Key: sk-or-v1-..." \\
+  -H "X-Base-Url: https://openrouter.ai/api/v1/chat/completions" \\
+  -H "X-Embedding-Url: https://openrouter.ai/api/v1/embeddings" \\
+  -H "X-Model: qwen/qwen3-vl-235b-a22b-instruct" \\
+  -d '{{"image_urls":["https://example.com/item.jpg"],"selected_language":"en"}}'
+"""
             }
         }
-    } 
+    }
