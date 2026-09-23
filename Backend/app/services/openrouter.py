@@ -2456,8 +2456,8 @@ Respond ONLY with a valid JSON object where each key is a field name:
             f"Motor category '{candidate}' does not match any of: {self.MOTOR_CATEGORIES}"
         )
 
-    @staticmethod
     def _log_motor_analytics(
+        self,
         analytics_service,
         result: Dict[str, Any],
         time_taken: float,
