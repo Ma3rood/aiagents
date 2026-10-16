@@ -11,10 +11,10 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, HttpUrl
 from typing import Any, Dict, List
 from app.api.deps import (
-    VISION_HEADERS_DOCS,
+    LISTING_DESCRIPTION_HEADERS_DOCS,
     OpenRouterHeaderOverrides,
     create_openrouter_service,
-    get_vision_overrides,
+    get_listing_description_overrides,
 )
 from app.core.logging_config import get_logger
 
@@ -54,13 +54,15 @@ class ListingDescriptionResponse(BaseModel):
         "Generate a market-appealing, customer-engaging product listing "
         "description from images, form field values, and a target language. "
         "The AI acts like an expert salesperson to craft compelling copy.\n"
-        + VISION_HEADERS_DOCS
+        + LISTING_DESCRIPTION_HEADERS_DOCS
     ),
     response_description="Generated listing description in the selected language",
 )
 async def generate_listing_description(
     request: ListingDescriptionRequest,
-    openrouter_overrides: OpenRouterHeaderOverrides = Depends(get_vision_overrides),
+    openrouter_overrides: OpenRouterHeaderOverrides = Depends(
+        get_listing_description_overrides
+    ),
 ):
     """
     Generate a compelling marketplace listing description.
@@ -76,7 +78,7 @@ async def generate_listing_description(
     - ``selected_language``: Target language code (e.g. ``"en"``, ``"ar"``)
 
     **Headers (optional, override env defaults):**
-    - ``X-Api-Key``, ``X-Base-Url``, ``X-Model``
+    - ``X-Api-Key``, ``X-Base-Url``, ``X-Model``, ``X-Enable-Text-Thinking``
 
     **Response:**
     - ``status``: ``"success"``

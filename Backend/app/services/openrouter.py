@@ -37,8 +37,8 @@ def _fix_trailing_comma_json(s: str) -> str:
 class OpenRouterService:
     """Service for interacting with OpenRouter API using Qwen3 VL model"""
     
-    MODEL = "qwen/qwen3-vl-235b-a22b-instruct"  # Vision model for image processing
-    TEXT_MODEL = "qwen/qwen3-235b-a22b"  # Text model for translation and text tasks
+    MODEL = "qwen/qwen3.8-flash"  # Vision model for image processing
+    TEXT_MODEL = "qwen/qwen3.8-flash"  # Text model for translation and text tasks
     EMBEDDING_MODEL = "qwen/qwen3-embedding-8b"  # Embedding model for semantic search
     
     # Root categories for marketplace classification
@@ -76,6 +76,7 @@ class OpenRouterService:
         model: Optional[str] = None,
         text_model: Optional[str] = None,
         embedding_model: Optional[str] = None,
+        enable_text_thinking: bool = False,
     ):
         # Header / caller overrides take precedence over settings defaults
         self.api_key = api_key or settings.OPENROUTER_API_KEY
@@ -91,11 +92,30 @@ class OpenRouterService:
             self.TEXT_MODEL = text_model
         if embedding_model:
             self.EMBEDDING_MODEL = embedding_model
+        self.enable_text_thinking = enable_text_thinking
         logger.debug(
             f"OpenRouterService initialized - Base URL: {self.base_url}, "
             f"Vision model: {self.MODEL}, Text model: {self.TEXT_MODEL}, "
-            f"Embedding model: {self.EMBEDDING_MODEL}"
+            f"Embedding model: {self.EMBEDDING_MODEL}, "
+            f"Text thinking: {self.enable_text_thinking}"
         )
+
+    def _apply_text_thinking(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Apply OpenRouter reasoning control for text-model payloads.
+
+        Controlled by ``X-Enable-Text-Thinking`` (default False / omitted = off).
+
+        OpenRouter unified API
+        (https://openrouter.ai/docs/guides/best-practices/reasoning-tokens):
+        - enable: ``reasoning.enabled = true``
+        - disable: ``reasoning.effort = "none"`` (and ``enabled = false``)
+          ``exclude`` alone still runs/bills thinking — do not use it to disable.
+        """
+        if self.enable_text_thinking:
+            payload["reasoning"] = {"enabled": True}
+        else:
+            payload["reasoning"] = {"effort": "none", "enabled": False}
+        return payload
     
     async def extract_form_fields_from_images(
         self,
@@ -604,14 +624,14 @@ Example for clothing:
         # Use provided model or default to TEXT_MODEL
         model_to_use = model or self.TEXT_MODEL
         
-        payload = {
+        payload = self._apply_text_thinking({
             "model": model_to_use,
             "messages": messages,
             "temperature": 0.2,  # Lower temperature for accurate translations
             "usage": {
                 "include": True
             }
-        }
+        })
         
         async with httpx.AsyncClient(timeout=60.0) as client:
             try:
@@ -1110,11 +1130,11 @@ Now translate the provided fields to {target_language}:"""
             "X-Title": "Ma3rood AI Agents Category Embedding Service"
         }
         
-        payload = {
+        payload = self._apply_text_thinking({
             "model": self.TEXT_MODEL,
             "messages": [{"role": "user", "content": prompt}],
             "temperature": 0.3,
-        }
+        })
         
         async with httpx.AsyncClient(timeout=360.0) as client:
             try:
@@ -1302,11 +1322,11 @@ Respond ONLY with a valid JSON array, no other text or markdown:
             "X-Title": "Ma3rood AI Agents Category Embedding Service"
         }
         
-        payload = {
+        payload = self._apply_text_thinking({
             "model": self.TEXT_MODEL,
             "messages": [{"role": "user", "content": prompt}],
             "temperature": 0.3,
-        }
+        })
         
         async with httpx.AsyncClient(timeout=180.0) as client:
             response = await client.post(
@@ -2559,6 +2579,8 @@ Respond ONLY with a valid JSON object where each key is a field name:
             "temperature": 0.7,  # Slightly creative for engaging copy
             "usage": {"include": True},
         }
+        # Thinking control only applies to the text-only (non-vision) path
+        payload = self._apply_text_thinking(payload)
 
         async with httpx.AsyncClient(timeout=90.0) as client:
             try:

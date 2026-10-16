@@ -77,6 +77,7 @@ async def translate_listing_fields(
     
     **Headers (optional, override body/env defaults):**
     - `X-Api-Key`, `X-Base-Url`, `X-Model` / `X-Text-Model` (header model wins over body `model`)
+    - `X-Enable-Text-Thinking` (default false; set true to enable model thinking)
     
     **Response:**
     - `status`: Success status

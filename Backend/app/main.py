@@ -126,6 +126,7 @@ Agent endpoints that call OpenRouter accept optional request headers.
 | `X-Model` | `X-Model-Name` | Vision / primary model |
 | `X-Text-Model` | — | Text model |
 | `X-Embedding-Model` | — | Embedding model |
+| `X-Enable-Text-Thinking` | — | Enable thinking on translation / category Phase 1 / listing-description text (default false) |
 
 **Precedence:** header → request body (e.g. translation `model`) → environment defaults.
 
@@ -262,6 +263,16 @@ async def docs_info():
             "required": False,
             "description": "Embedding model name.",
             "example": "qwen/qwen3-embedding-8b",
+        },
+        "X-Enable-Text-Thinking": {
+            "alias": None,
+            "required": False,
+            "description": (
+                "Enable model thinking for translation, category embeddings Phase 1, "
+                "and listing-description text-only path. Defaults to false when omitted. "
+                "Set true/1/on to enable."
+            ),
+            "example": "false",
         },
     }
 

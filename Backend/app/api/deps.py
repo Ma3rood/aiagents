@@ -18,6 +18,8 @@ class OpenRouterHeaderOverrides:
     model: Optional[str] = None
     text_model: Optional[str] = None
     embedding_model: Optional[str] = None
+    # Default False: thinking off unless the client explicitly enables it
+    enable_text_thinking: bool = False
 
 
 def _first_non_empty(*values: Optional[str]) -> Optional[str]:
@@ -25,6 +27,18 @@ def _first_non_empty(*values: Optional[str]) -> Optional[str]:
         if value is not None and str(value).strip():
             return str(value).strip()
     return None
+
+
+def _parse_bool_header(value: Optional[str], default: bool = False) -> bool:
+    """Parse a boolean request header; empty/missing → default (False)."""
+    if value is None or not str(value).strip():
+        return default
+    normalized = str(value).strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    return default
 
 
 def _headers_docs(*rows: tuple[str, str]) -> str:
@@ -50,10 +64,24 @@ VISION_HEADERS_DOCS = _headers_docs(
     ("X-Model", "Vision model"),
 )
 
+LISTING_DESCRIPTION_HEADERS_DOCS = _headers_docs(
+    ("X-Api-Key", "API key"),
+    ("X-Base-Url", "Chat completions URL"),
+    ("X-Model", "Vision model"),
+    (
+        "X-Enable-Text-Thinking",
+        "Enable model thinking on text-only path (default false; set true to enable)",
+    ),
+)
+
 TEXT_HEADERS_DOCS = _headers_docs(
     ("X-Api-Key", "API key"),
     ("X-Base-Url", "Chat completions URL"),
     ("X-Model / X-Text-Model", "Text model (header wins over body `model`)"),
+    (
+        "X-Enable-Text-Thinking",
+        "Enable model thinking (default false; set true to enable)",
+    ),
 )
 
 VISION_EMBEDDING_HEADERS_DOCS = _headers_docs(
@@ -70,6 +98,10 @@ TEXT_EMBEDDING_HEADERS_DOCS = _headers_docs(
     ("X-Embedding-Url", "Embeddings URL"),
     ("X-Text-Model", "Text model (semantic descriptions)"),
     ("X-Embedding-Model", "Embedding model"),
+    (
+        "X-Enable-Text-Thinking",
+        "Enable model thinking for Phase 1 semantic descriptions (default false; set true to enable)",
+    ),
 )
 
 VISION_TEXT_HEADERS_DOCS = _headers_docs(
@@ -127,6 +159,15 @@ _EMBEDDING_MODEL = dict(
     description="Embedding model name. Overrides the default embedding model.",
     example="qwen/qwen3-embedding-8b",
 )
+_ENABLE_TEXT_THINKING = dict(
+    alias="X-Enable-Text-Thinking",
+    description=(
+        "Enable model thinking for text-model calls on this request. "
+        "Defaults to false when omitted. Set to true/1/on to enable. "
+        "When false, sends OpenRouter reasoning.effort=none."
+    ),
+    example="false",
+)
 
 
 def get_vision_overrides(
@@ -151,6 +192,30 @@ def get_vision_overrides(
     )
 
 
+def get_listing_description_overrides(
+    x_api_key: Optional[str] = Header(None, **_API_KEY),
+    x_openrouter_api_key: Optional[str] = Header(
+        None, alias="X-OpenRouter-Api-Key", include_in_schema=False
+    ),
+    x_base_url: Optional[str] = Header(None, **_BASE_URL),
+    x_openrouter_base_url: Optional[str] = Header(
+        None, alias="X-OpenRouter-Base-Url", include_in_schema=False
+    ),
+    x_model: Optional[str] = Header(None, **_MODEL),
+    x_model_name: Optional[str] = Header(
+        None, alias="X-Model-Name", include_in_schema=False
+    ),
+    x_enable_text_thinking: Optional[str] = Header(None, **_ENABLE_TEXT_THINKING),
+) -> OpenRouterHeaderOverrides:
+    """Headers used by listing-description (vision + optional text thinking)."""
+    return OpenRouterHeaderOverrides(
+        api_key=_first_non_empty(x_api_key, x_openrouter_api_key),
+        base_url=_first_non_empty(x_base_url, x_openrouter_base_url),
+        model=_first_non_empty(x_model, x_model_name),
+        enable_text_thinking=_parse_bool_header(x_enable_text_thinking, default=False),
+    )
+
+
 def get_text_overrides(
     x_api_key: Optional[str] = Header(None, **_API_KEY),
     x_openrouter_api_key: Optional[str] = Header(
@@ -165,6 +230,7 @@ def get_text_overrides(
         None, alias="X-Model-Name", include_in_schema=False
     ),
     x_text_model: Optional[str] = Header(None, **_TEXT_MODEL_TRANSLATION),
+    x_enable_text_thinking: Optional[str] = Header(None, **_ENABLE_TEXT_THINKING),
 ) -> OpenRouterHeaderOverrides:
     """Headers used by text-only endpoints (e.g. translation)."""
     return OpenRouterHeaderOverrides(
@@ -172,6 +238,7 @@ def get_text_overrides(
         base_url=_first_non_empty(x_base_url, x_openrouter_base_url),
         model=_first_non_empty(x_model, x_model_name),
         text_model=_first_non_empty(x_text_model),
+        enable_text_thinking=_parse_bool_header(x_enable_text_thinking, default=False),
     )
 
 
@@ -219,6 +286,7 @@ def get_text_embedding_overrides(
     ),
     x_text_model: Optional[str] = Header(None, **_TEXT_MODEL),
     x_embedding_model: Optional[str] = Header(None, **_EMBEDDING_MODEL),
+    x_enable_text_thinking: Optional[str] = Header(None, **_ENABLE_TEXT_THINKING),
 ) -> OpenRouterHeaderOverrides:
     """Headers used by text + embedding endpoints (category embeddings)."""
     return OpenRouterHeaderOverrides(
@@ -227,6 +295,7 @@ def get_text_embedding_overrides(
         embedding_url=_first_non_empty(x_embedding_url, x_openrouter_embedding_url),
         text_model=_first_non_empty(x_text_model),
         embedding_model=_first_non_empty(x_embedding_model),
+        enable_text_thinking=_parse_bool_header(x_enable_text_thinking, default=False),
     )
 
 
@@ -270,4 +339,5 @@ def create_openrouter_service(
         model=overrides.model,
         text_model=overrides.text_model,
         embedding_model=overrides.embedding_model,
+        enable_text_thinking=overrides.enable_text_thinking,
     )
